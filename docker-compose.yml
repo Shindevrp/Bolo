@@ -1,0 +1,86 @@
+services:
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: tasa-vllm
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - MODEL=${TASA_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
+      - MAX_MODEL_LEN=${TASA_VLLM_MAX_LEN:-4096}
+      - GPU_MEMORY_UTILIZATION=${TASA_VLLM_GPU_UTIL:-0.90}
+      - DTYPE=${TASA_VLLM_DTYPE:-float16}
+      - QUANTIZATION=awq
+      - API_KEY=${TASA_VLLM_API_KEY:-EMPTY}
+    command:
+      - "--model"
+      - "${TASA_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}"
+      - "--max-model-len"
+      - "${TASA_VLLM_MAX_LEN:-4096}"
+      - "--gpu-memory-utilization"
+      - "${TASA_VLLM_GPU_UTIL:-0.90}"
+      - "--dtype"
+      - "${TASA_VLLM_DTYPE:-float16}"
+      - "--quantization"
+      - "awq"
+      - "--port"
+      - "8000"
+      - "--host"
+      - "0.0.0.0"
+    ports:
+      - "8001:8000"
+    volumes:
+      - vllm_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+    networks:
+      - tasa-net
+
+  tasa:
+    build: .
+    container_name: tasa-app
+    depends_on:
+      vllm:
+        condition: service_healthy
+    environment:
+      - TASA_LLM_URL=http://vllm:8000/v1
+      - TASA_LLM_MODEL=${TASA_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
+      - TASA_STT_MODEL=${TASA_STT_MODEL:-base}
+      - TASA_STT_DEVICE=${TASA_STT_DEVICE:-cpu}
+      - TASA_STT_COMPUTE=int8
+      - TASA_TTS_MODEL=/app/models/piper/en_US-lessac-medium.onnx
+      - TASA_VAD_THRESHOLD=0.5
+    ports:
+      - "8000:8000"
+    volumes:
+      - stt_cache:/root/.cache
+      - ./configs:/app/configs:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - tasa-net
+
+volumes:
+  vllm_cache:
+  stt_cache:
+
+networks:
+  tasa-net:
+    driver: bridge

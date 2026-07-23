@@ -1,0 +1,16 @@
+.venv
+.venv/
+.git
+.git/
+.gitignore
+**/__pycache__
+**/*.pyc
+.venv
+*.egg-info
+.pytest_cache
+Dockerfile
+docker-compose.yml
+README.md
+tests/
+.venv/
+venv/
