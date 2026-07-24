@@ -27,10 +27,10 @@ class PiperTTS(TTSProvider):
         self._syn_config = piper.SynthesisConfig(
             length_scale=length_scale,
             noise_scale=noise_scale,
-            noise_w=noise_w,
+            noise_w_scale=noise_w,
         )
         self._voice = None
-        self._sample_rate = 22050
+        self._sample_rate: int = 22050
 
     @property
     def voice(self) -> piper.PiperVoice:
@@ -40,6 +40,10 @@ class PiperTTS(TTSProvider):
             )
             self._sample_rate = self._voice.config.sample_rate
         return self._voice
+
+    @property
+    def sample_rate(self) -> int:
+        return self._sample_rate
 
     def _split_sentences(self, text: str) -> list[str]:
         import re

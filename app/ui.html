@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TASA</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(ellipse at 50% 0%,#0B1A2E 0%,#020617 70%);color:rgba(255,255,255,.85);min-height:100vh;display:flex;justify-content:center;padding:1rem}
+.container{max-width:640px;width:100%}
+.card{background:rgba(15,25,45,.5);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.06);border-radius:24px;padding:1.25rem 1.5rem;box-shadow:0 20px 60px rgba(0,0,0,.5);margin-bottom:1rem}
+.vc{text-align:center;margin-bottom:.5rem}
+.vc-top{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:6px}
+.vc-dot{width:8px;height:8px;border-radius:50%;background:#6B7280;display:inline-block;transition:all .3s}
+.vc-dot.on{background:#3B82F6;box-shadow:0 0 10px rgba(59,130,246,.5);animation:vkp 1.2s infinite}
+.vc-dot.busy{background:#F59E0B;box-shadow:0 0 10px rgba(245,158,11,.4);animation:vkp .8s infinite}
+.vc-dot.talk{background:#10B981;box-shadow:0 0 10px rgba(16,185,129,.4);animation:vkp .6s infinite}
+@keyframes vkp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(1.35)}}
+.vc-lbl{font-size:.75rem;color:rgba(255,255,255,.5);letter-spacing:.2px}
+.vc-dbg{font-size:.7rem;color:#FBBF24;min-height:1.2rem;margin-bottom:2px;font-weight:600}
+.vc-err{font-size:.7rem;color:#EF4444;min-height:1.2rem;margin-bottom:2px;font-weight:600}
+.vc-chat{background:rgba(255,255,255,.015);border:1px solid rgba(255,255,255,.03);border-radius:14px;padding:.75rem;min-height:120px;max-height:300px;overflow-y:auto;text-align:left;font-size:.85rem;line-height:1.5;margin-bottom:8px}
+.vc-chat::-webkit-scrollbar{width:4px}
+.vc-chat::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:4px}
+.vc-u{color:rgba(255,255,255,.7);margin-bottom:4px}
+.vc-u .l{font-size:.6rem;color:#3B82F6;font-weight:600;text-transform:uppercase;margin-right:6px}
+.vc-a{color:rgba(255,255,255,.6);margin-bottom:4px}
+.vc-a .l{font-size:.6rem;color:#10B981;font-weight:600;text-transform:uppercase;margin-right:6px}
+.vc-empty{color:rgba(255,255,255,.12);font-size:.75rem;text-align:center;padding:1.5rem 0}
+.vc-btn{width:44px;height:44px;border-radius:50%;border:1px solid rgba(59,130,246,.15);background:rgba(255,255,255,.03);color:rgba(255,255,255,.4);font-size:1.1rem;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;justify-content:center}
+.vc-btn:hover{background:rgba(255,255,255,.07);border-color:rgba(255,255,255,.12)}
+.vc-btn.rec{background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.25);color:#EF4444;box-shadow:0 0 14px rgba(239,68,68,.12)}
+h1{font-size:1.1rem;font-weight:500;color:rgba(255,255,255,.3);margin-bottom:.75rem;letter-spacing:.5px;text-transform:uppercase}
+.text-input-wrap{display:flex;gap:8px;margin-top:8px}
+.text-input-wrap input{flex:1;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:.6rem 1rem;color:rgba(255,255,255,.85);font-size:.9rem;outline:none;transition:border .2s}
+.text-input-wrap input:focus{border-color:rgba(59,130,246,.3)}
+.text-input-wrap input::placeholder{color:rgba(255,255,255,.2)}
+.text-input-wrap button{background:rgba(59,130,246,.12);border:1px solid rgba(59,130,246,.15);border-radius:14px;padding:.6rem 1.2rem;color:rgba(255,255,255,.7);font-size:.85rem;cursor:pointer;transition:all .2s}
+.text-input-wrap button:hover{background:rgba(59,130,246,.2);color:rgba(255,255,255,.9)}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h1>TASA &mdash; Voice</h1>
+    <div class="vc">
+      <div class="vc-top">
+        <span class="vc-dot" id="vcd"></span>
+        <span class="vc-lbl" id="vcl">Click mic to speak</span>
+      </div>
+      <div id="vdbg" class="vc-dbg"></div>
+      <div class="vc-chat" id="vcc"><div class="vc-empty">Speak or type below...</div></div>
+      <button class="vc-btn" id="vcb">🎤</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h1>TASA &mdash; Text</h1>
+    <div class="vc-chat" id="tcc" style="min-height:80px;max-height:200px"><div class="vc-empty">Type a message...</div></div>
+    <div class="text-input-wrap">
+      <input type="text" id="tci" placeholder="Type a message..." autocomplete="off">
+      <button id="tcb">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  /* ---- Voice ---- */
+  var b=document.getElementById('vcb'),d=document.getElementById('vcd'),l=document.getElementById('vcl'),c=document.getElementById('vcc'),db=document.getElementById('vdbg');
+  var ws=null,st=null,ac=null,pr=null,sc=null,act=false,reconn=null,idleTimer=null;
+  function dbg(t){db.className='vc-dbg';db.textContent=t;}
+  function sts(cl,t){d.className='vc-dot'+(cl?' '+cl:'');l.textContent=t;}
+  function lg(tp,tx){
+    if(tp==='c'){c.innerHTML='<div class="vc-empty">Speak or type below...</div>';return;}
+    var last=c.lastElementChild;
+    if(tp==='u'){
+      c.innerHTML+='<div class="vc-u"><span class="l">You</span>'+escHtml(tx)+'</div>';
+    }else if(tp==='a'||tp==='a_'){
+      if(tp==='a_'&&last&&last.className==='vc-a'){
+        last.innerHTML='<span class="l">TASA</span>'+escHtml(tx);
+      }else{
+        c.innerHTML+='<div class="vc-a"><span class="l">TASA</span>'+escHtml(tx)+'</div>';
+      }
+    }
+    c.scrollTop=c.scrollHeight;
+  }
+  function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+  function startVoice(){
+    dbg('Requesting mic...');
+    navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:true}})
+    .then(function(s){
+      st=s;dbg('Mic granted');
+      sc=ac.createMediaStreamSource(s);
+      pr=ac.createScriptProcessor(4096,1,1);
+      sc.connect(pr);
+      dbg('Connecting WS...');
+      ws=new WebSocket('ws://localhost:8000/ws/audio');ws.binaryType='arraybuffer';
+      ws.onopen=function(){
+        act=true;b.classList.add('rec');b.textContent='🔴';sts('on','Listening...');lg('c');
+        var apkt=0;
+        pr.onaudioprocess=function(e){
+          try{
+            var inp=e.inputBuffer.getChannelData(0),pcm=new Int16Array(inp.length);
+            for(var i=0;i<inp.length;i++){var s=Math.max(-1,Math.min(1,inp[i]));pcm[i]=s<0?s*0x8000:s*0x7FFF;}
+            if(ws&&ws.readyState===1){ws.send(pcm.buffer);apkt++;if(apkt%5===0)dbg('Sending ('+apkt+' packets)');}
+          }catch(x){dbg('Audio send err: '+x.message);}
+        };
+        if(idleTimer)clearInterval(idleTimer);
+        idleTimer=setInterval(function(){
+          if(!act){clearInterval(idleTimer);idleTimer=null;return;}
+          if(apkt===0)dbg('Waiting for audio packets...');
+        },3000);
+      };
+      ws.onmessage=function(e){
+        if(e.data instanceof ArrayBuffer){
+          if(ac){
+            try{
+              ac.decodeAudioData(e.data,function(audio){
+                var src=ac.createBufferSource();
+                src.buffer=audio;src.connect(ac.destination);src.start();
+              },function(){});
+            }catch(x){}
+          }
+          return;
+        }
+        try{
+          var m=JSON.parse(e.data);
+          if(m.type==='speech_start'){sts('on','Listening...');dbg('Speaking...');}
+          else if(m.type==='speech_end'){sts('busy','Processing...');dbg('Processing speech...');}
+          else if(m.type==='transcript'){lg('u',m.text);dbg('Transcript received');}
+          else if(m.type==='llm_token'){
+            if(!c.querySelector('.vc-a'))sts('talk','Speaking...');
+            lg('a_',m.token);
+          }
+          else if(m.type==='llm_done'){sts('','Done');dbg('LLM response complete');}
+          else if(m.type==='tts_done'){setTimeout(stopVoice,800);dbg('TTS done');}
+          else if(m.type==='error'){dbg('Error: '+m.text);}
+        }catch(x){dbg('Parse error: '+x.message);}
+      };
+      ws.onerror=function(e){dbg('WebSocket error');sts('','Connection error');};
+      ws.onclose=function(e){
+        dbg('WS closed (code='+e.code+')');
+        if(act){reconn=setTimeout(function(){if(act)startVoice();},2000);}
+      };
+    })
+    .catch(function(e){
+      dbg('Mic denied: '+e.message);
+      sts('','Mic access denied');
+    });
+  }
+  function stopVoice(){
+    act=false;
+    if(idleTimer){clearInterval(idleTimer);idleTimer=null;}
+    if(reconn){clearTimeout(reconn);reconn=null;}
+    if(pr){try{pr.disconnect();}catch(e){}pr=null;}
+    if(sc){try{sc.disconnect();}catch(e){}sc=null;}
+    if(ac){try{ac.close();}catch(e){}ac=null;}
+    if(st){st.getTracks().forEach(function(t){t.stop();});st=null;}
+    if(ws){try{ws.close();}catch(e){}ws=null;}
+    b.classList.remove('rec');b.textContent='🎤';
+    dbg('');
+    var t=l.textContent;
+    if(t==='Listening...'||t==='Processing...'||t==='Done')sts('','Click mic to speak');
+  }
+  b.addEventListener('click',function(){
+    if(act){stopVoice();sts('','Stopped');dbg('Stopped');return;}
+    /* Create AudioContext in click handler (user gesture) */
+    try{
+      ac=new(window.AudioContext||window.webkitAudioContext)({sampleRate:16000});
+    }catch(e){
+      try{ac=new(window.AudioContext||window.webkitAudioContext)();}catch(e2){dbg('AudioCtx error');return;}
+    }
+    ac.resume().catch(function(e){dbg('Resume err: '+e.message);});
+    startVoice();
+  });
+
+  /* ---- Text Chat ---- */
+  var tc=document.getElementById('tcc'),ti=document.getElementById('tci'),tb=document.getElementById('tcb');
+  function tlg(role,text){
+    var cls=role==='user'?'vc-u':'vc-a',lbl=role==='user'?'You':'TASA';
+    if(tc.querySelector('.vc-empty'))tc.innerHTML='';
+    tc.innerHTML+='<div class="'+cls+'"><span class="l">'+lbl+'</span>'+escHtml(text)+'</div>';
+    tc.scrollTop=tc.scrollHeight;
+  }
+  function sendText(){
+    var msg=ti.value.trim();
+    if(!msg)return;
+    ti.value='';tlg('user',msg);
+    var lastMsg=document.createElement('div');
+    lastMsg.className='vc-a';lastMsg.innerHTML='<span class="l">TASA</span>...';
+    tc.appendChild(lastMsg);tc.scrollTop=tc.scrollHeight;
+    var xhr=new XMLHttpRequest();
+    xhr.open('POST','http://localhost:8000/chat/stream',true);
+    xhr.setRequestHeader('Content-Type','application/json');
+    xhr.responseType='text';
+    var full='';
+    xhr.onprogress=function(){
+      var lines=xhr.responseText.split('\n');
+      for(var i=0;i<lines.length;i++){
+        var line=lines[i].trim();
+        if(!line.startsWith('data: '))continue;
+        try{
+          var p=JSON.parse(line.slice(6));
+          if(p.type==='token'){full+=p.token;lastMsg.innerHTML='<span class="l">TASA</span>'+escHtml(full);}
+        }catch(e){}
+      }
+    };
+    xhr.onload=function(){if(lastMsg)lastMsg.innerHTML='<span class="l">TASA</span>'+escHtml(full);};
+    xhr.send(JSON.stringify({message:msg}));
+  }
+  ti.addEventListener('keydown',function(e){if(e.key==='Enter')sendText();});
+  tb.addEventListener('click',sendText);
+})();
+</script>
+</body>
+</html>

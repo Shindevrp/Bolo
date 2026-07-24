@@ -9,7 +9,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="TASA real-time voice agent")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("server", help="Run the TASA WebSocket server")
+    server = sub.add_parser("server", help="Run the TASA WebSocket server")
+    server.add_argument("--host", default="127.0.0.1", help="Bind address")
+    server.add_argument("--port", type=int, default=8000, help="Bind port")
 
     demo = sub.add_parser("demo", help="Run a local microphone demo")
     demo.add_argument("--stt-model", default="base", help="faster-whisper model size")
@@ -23,7 +25,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "server":
-        _run_server()
+        _run_server(host=args.host, port=args.port)
     elif args.command == "demo":
         asyncio.run(_run_demo(args))
     elif args.command == "metrics":
@@ -31,9 +33,9 @@ def main() -> None:
         sys.exit(1)
 
 
-def _run_server() -> None:
+def _run_server(host: str = "127.0.0.1", port: int = 8000) -> None:
     import uvicorn
-    uvicorn.run("app.server:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run("app.server:app", host=host, port=port, reload=False)
 
 
 async def _run_demo(args: argparse.Namespace) -> None:

@@ -107,15 +107,26 @@ async def audio_websocket(websocket: WebSocket):
 
         while True:
             raw = await websocket.receive()
+            logger.info(f"Session {session_id} raw keys: {list(raw.keys())} type={raw.get('type','?')}")
 
-            if raw.get("type") == "websocket.receive" and "bytes" in raw:
+            msg_type = raw.get("type", "")
+            if msg_type == "websocket.disconnect":
+                logger.info(f"Session {session_id} disconnect msg")
+                break
+
+            if "bytes" in raw and raw["bytes"] is not None:
                 chunk = raw["bytes"]
+                logger.info(f"Session {session_id} audio chunk {len(chunk)} bytes")
                 await pipeline.push_audio(chunk, session_id)
 
-            elif raw.get("type") == "websocket.receive" and "text" in raw:
-                data = json.loads(raw["text"])
+            elif "text" in raw and raw["text"] is not None:
+                text = raw["text"]
+                logger.info(f"Session {session_id} text msg: {text[:100]}")
+                data = json.loads(text)
                 if data.get("type") == "ping":
                     await websocket.send_json({"type": "pong"})
+            else:
+                logger.info(f"Session {session_id} unhandled msg: {raw}")
 
     except WebSocketDisconnect:
         logger.info(f"Session {session_id} disconnected")
