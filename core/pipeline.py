@@ -16,6 +16,9 @@ from modules.turn.timing import TurnTiming
 from modules.turn.backchannel import TurnBackchannel
 from modules.backchannel.generator import BackchannelGenerator
 from modules.backchannel.timing import BackchannelTiming
+from modules.memory.session import SessionMemory
+from modules.memory.retrieval import RetrievalModule
+from modules.dialogue.prompts import build_system_prompt
 from modules.metrics.latency import LatencyTracker
 from modules.metrics.logger import MetricsLogger
 from utils.logger import get_logger
@@ -54,6 +57,7 @@ class ConversationContext:
     last_transcript: str = ""
     is_question: bool = False
     rapid_exchange: bool = False
+    prosody_trajectory: str = "neutral"
 
 
 class StreamingPipeline:
@@ -91,6 +95,8 @@ class StreamingPipeline:
         self._current_task: asyncio.Task | None = None
         self._running = False
         self._contexts: dict[str, ConversationContext] = {}
+        self._memories: dict[str, SessionMemory] = {}
+        self._retrievals: dict[str, RetrievalModule] = {}
 
     async def start(self) -> None:
         self._running = True
@@ -114,6 +120,17 @@ class StreamingPipeline:
         except asyncio.QueueFull:
             logger.warning("audio queue full, dropping chunk")
 
+    def register_session(
+        self, session_id: str, memory: SessionMemory, retrieval: RetrievalModule
+    ) -> None:
+        self._memories[session_id] = memory
+        self._retrievals[session_id] = retrieval
+
+    def unregister_session(self, session_id: str) -> None:
+        self._memories.pop(session_id, None)
+        self._retrievals.pop(session_id, None)
+        self._contexts.pop(session_id, None)
+
     async def signal_interrupt(self, session_id: str = "default") -> None:
         self._interrupt_event.set()
         if self._current_task and not self._current_task.done():
@@ -133,11 +150,31 @@ class StreamingPipeline:
             self._contexts[session_id] = ConversationContext()
         return self._contexts[session_id]
 
+    def _memory(self, session_id: str) -> SessionMemory | None:
+        return self._memories.get(session_id)
+
+    def _retrieval(self, session_id: str) -> RetrievalModule | None:
+        return self._retrievals.get(session_id)
+
+    def _update_engagement_from_prosody(
+        self, ctx: ConversationContext, prosody_result: dict | None
+    ) -> None:
+        if not prosody_result:
+            return
+        trajectory = prosody_result.get("trajectory", "neutral")
+        ctx.prosody_trajectory = trajectory
+
+        if trajectory == "rising":
+            ctx.engagement = min(1.0, ctx.engagement + 0.02)
+        elif trajectory == "falling":
+            ctx.engagement = max(0.1, ctx.engagement - 0.01)
+
     async def _pipeline_loop(self) -> None:
         speech_buffer = bytearray()
         is_speaking = False
         silence_ms = 0.0
         chunk_count = 0
+        prosody_update_interval = 5
 
         while self._running:
             try:
@@ -172,6 +209,11 @@ class StreamingPipeline:
 
                 turn_decision = self.turn_detector.process_chunk(chunk, True)
 
+                if chunk_count % prosody_update_interval == 0:
+                    self._update_engagement_from_prosody(
+                        ctx, self.turn_detector.prosody_analyzer.analyze()
+                    )
+
                 speech_dur_ms = len(speech_buffer) / (self.vad.sample_rate * 2 / 1000)
                 if self.turn_backchannel.should_emit(
                     0, speech_dur_ms, ctx.engagement
@@ -181,6 +223,7 @@ class StreamingPipeline:
                     )
                     if bc and chunk_count % 10 == 0:
                         await self._emit(PipelineEvent.BACKCHANNEL, bc, sid)
+                        logger.debug(f"backchannel session={sid} text={bc}")
 
             else:
                 if is_speaking:
@@ -190,7 +233,7 @@ class StreamingPipeline:
                     turn_decision = self.turn_detector.process_chunk(chunk, False)
 
                     adaptive_threshold = 400.0
-                    if turn_decision in ("end_turn_force",):
+                    if turn_decision == "end_turn_force":
                         adaptive_threshold = 200.0
                     elif turn_decision == "end_turn":
                         adaptive_threshold = 300.0
@@ -213,44 +256,6 @@ class StreamingPipeline:
                         asyncio.create_task(
                             self._process_speech_segment(audio_blob, sid, ctx)
                         )
-
-                if chunk_count > 0 and chunk_count % 50 == 0:
-                    ctx.engagement = min(
-                        1.0, ctx.engagement + 0.01
-                    )
-
-    async def _build_system_prompt(self, ctx: ConversationContext) -> str:
-        base = "You are TASA, a real-time conversational AI assistant."
-
-        if ctx.engagement < 0.3:
-            base += (
-                " The user seems disengaged. Keep responses very brief, "
-                "warm, and inviting. Ask simple follow-ups."
-            )
-        elif ctx.engagement > 0.8:
-            base += (
-                " The user is highly engaged. Feel free to be more "
-                "conversational, expressive, and detailed."
-            )
-        else:
-            base += (
-                " Respond concisely and naturally. Keep responses short, "
-                "conversational, and human-like."
-            )
-
-        base += (
-            " Use occasional thoughtful pauses like 'hmm' or 'well' "
-            "when appropriate. Vary your sentence structure. "
-            "Reflect the user's emotion subtly."
-        )
-
-        if ctx.turn_count > 5:
-            base += (
-                " This is an ongoing conversation — refer to previous "
-                "context naturally."
-            )
-
-        return base
 
     async def _process_speech_segment(
         self, audio_blob: bytes, session_id: str, ctx: ConversationContext
@@ -276,14 +281,12 @@ class StreamingPipeline:
             else:
                 ctx.engagement = max(0.1, ctx.engagement - 0.02)
 
-            system_prompt = await self._build_system_prompt(ctx)
-            messages = [
-                {"role": "system", "content": system_prompt},
-            ]
-            recent_contexts = self._get_recent_context(session_id)
-            for ctx_msg in recent_contexts:
-                messages.append(ctx_msg)
-            messages.append({"role": "user", "content": transcript})
+            memory = self._memory(session_id)
+            retrieval = self._retrieval(session_id)
+
+            messages = await self._build_messages(
+                transcript, ctx, memory, retrieval
+            )
 
             llm_start = time.perf_counter()
             full = ""
@@ -304,6 +307,11 @@ class StreamingPipeline:
 
             self._latency.measure("llm_full", llm_start)
             self._log_latency("llm_full")
+
+            if memory:
+                memory.add("assistant", full)
+            if retrieval:
+                retrieval.add_to_long_term(full)
 
             delay = self.turn_timing.compute_delay(
                 pause_duration=ctx.last_turn_duration_ms / 1000,
@@ -328,8 +336,58 @@ class StreamingPipeline:
             logger.error(f"processing error session={session_id} error={e}")
             await self._emit(PipelineEvent.ERROR, str(e), session_id)
 
-    def _get_recent_context(self, session_id: str) -> list[dict[str, str]]:
-        return []
+    async def _build_messages(
+        self,
+        transcript: str,
+        ctx: ConversationContext,
+        memory: SessionMemory | None,
+        retrieval: RetrievalModule | None,
+    ) -> list[dict[str, str]]:
+        has_context = False
+        retrieved: list[str] = []
+
+        if retrieval and memory:
+            retrieved = retrieval.retrieve_context(transcript, memory, top_k=3)
+            if retrieved:
+                has_context = True
+
+        system_prompt = build_system_prompt(
+            engagement=ctx.engagement,
+            turn_count=ctx.turn_count,
+            has_context=has_context,
+        )
+
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": system_prompt},
+        ]
+
+        if has_context and retrieved:
+            context_block = "\n".join(
+                f"- {r}" for r in retrieved[:3]
+            )
+            messages.append({
+                "role": "system",
+                "content": f"Relevant context from earlier:\n{context_block}",
+            })
+
+        if memory:
+            history = memory.get_history(6)
+            for entry in history:
+                messages.append({
+                    "role": entry.role,
+                    "content": entry.content,
+                })
+
+            if memory.token_estimate() > 3072:
+                memory.truncate_to_budget(3072)
+                logger.debug(f"truncated memory for session {ctx.turn_count}")
+
+        if memory:
+            memory.add("user", transcript)
+
+        messages.append({"role": "user", "content": transcript})
+
+        return messages
 
     def _pcm_to_wav(self, pcm_bytes: bytes, sample_rate: int) -> bytes:
         num_channels = 1

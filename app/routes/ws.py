@@ -21,15 +21,6 @@ SESSION_TIMEOUT = 300.0
 _active_sessions: dict[str, float] = {}
 
 
-def _cleanup_stale_sessions():
-    now = time.time()
-    stale = [sid for sid, last in _active_sessions.items() if now - last > SESSION_TIMEOUT]
-    for sid in stale:
-        del _active_sessions[sid]
-    if stale:
-        logger.info(f"cleaned {len(stale)} stale sessions")
-
-
 @router.websocket("/audio")
 async def audio_websocket(websocket: WebSocket):
     await websocket.accept()
@@ -45,6 +36,9 @@ async def audio_websocket(websocket: WebSocket):
 
     session = SessionState(session_id=session_id)
     memory = SessionMemory()
+    retrieval = RetrievalModule()
+
+    pipeline.register_session(session_id, memory, retrieval)
 
     async def pump_output():
         async for msg in pipeline.output_stream():
@@ -62,7 +56,6 @@ async def audio_websocket(websocket: WebSocket):
 
                 elif msg.event == PipelineEvent.FINAL_TRANSCRIPT:
                     session.add_user_turn(str(msg.data))
-                    memory.add("user", str(msg.data))
                     await websocket.send_json({
                         "type": "transcript",
                         "text": str(msg.data),
@@ -77,7 +70,6 @@ async def audio_websocket(websocket: WebSocket):
 
                 elif msg.event == PipelineEvent.LLM_DONE:
                     session.add_ai_turn(str(msg.data))
-                    memory.add("assistant", str(msg.data))
                     await websocket.send_json({
                         "type": "llm_done",
                         "text": str(msg.data),
@@ -150,5 +142,6 @@ async def audio_websocket(websocket: WebSocket):
     finally:
         if pump_task:
             pump_task.cancel()
+        pipeline.unregister_session(session_id)
         _active_sessions.pop(session_id, None)
         logger.info(f"session {session_id} cleaned up")
