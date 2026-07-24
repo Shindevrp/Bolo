@@ -26,9 +26,7 @@ COPY app/ app/
 COPY core/ core/
 COPY modules/ modules/
 COPY providers/ providers/
-COPY streaming/ streaming/
 COPY utils/ utils/
-COPY configs/ configs/
 
 ENV TASA_STT_MODEL=base
 ENV TASA_STT_DEVICE=cpu
