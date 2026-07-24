@@ -4,16 +4,27 @@ import json
 import logging
 import sys
 from datetime import datetime, timezone
+from typing import Any
+
+_KNOWN_ATTRS = {
+    "args", "asctime", "created", "exc_info", "exc_text", "filename",
+    "funcName", "levelname", "levelno", "lineno", "message", "module",
+    "msecs", "msg", "name", "pathname", "process", "processName",
+    "relativeCreated", "stack_info", "thread", "threadName", "taskName",
+}
 
 
 class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        log = {
+        log: dict[str, Any] = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "name": record.name,
             "msg": record.getMessage(),
         }
+        for key, val in record.__dict__.items():
+            if key not in _KNOWN_ATTRS and not key.startswith("_"):
+                log[key] = val
         if record.exc_info and record.exc_info[0]:
             log["exc"] = self.formatException(record.exc_info)
         return json.dumps(log, default=str)

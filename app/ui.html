@@ -176,6 +176,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
           else if(m.type==='tts_done'){setTimeout(stopVoice,800);dbg('TTS done');}
           else if(m.type==='backchannel'){dbg('TASA: '+m.text);}
           else if(m.type==='interrupt'){sts('on','Listening...');dbg('Interruption detected');}
+          else if(m.type==='status'){dbg(m.text);}
           else if(m.type==='error'){err(m.text);dbg('Error: '+m.text);}
         }catch(x){dbg('Parse err');}
       };

@@ -96,8 +96,9 @@ body{font-family:system-ui,-apple-system,sans-serif;background:transparent;displ
             if(!c.querySelector('.vc-a'))sts('talk','Speaking...');
             lg('a_',m.token);
           }
-          else if(m.type==='llm_done'){sts('','Speaking...');}
-          else if(m.type==='tts_done'){setTimeout(stop,800);}
+        else if(m.type==='llm_done'){sts('','Speaking...');}
+        else if(m.type==='status'){sts('',m.text);}
+        else if(m.type==='tts_done'){setTimeout(stop,800);}
           else if(m.type==='backchannel'){dbg('Backchannel: '+m.text);}
         }catch(x){dbg('Msg err: '+x.message);}
       };

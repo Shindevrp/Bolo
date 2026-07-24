@@ -1,11 +1,56 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
 class CoreConfig:
-    """Basic configuration for the core layer."""
+    # STT
+    stt_model: str = field(
+        default_factory=lambda: os.getenv("TASA_STT_MODEL", "base")
+    )
+    stt_device: str = field(
+        default_factory=lambda: os.getenv("TASA_STT_DEVICE", "cpu")
+    )
+    stt_compute: str = field(
+        default_factory=lambda: os.getenv("TASA_STT_COMPUTE", "int8")
+    )
 
+    # LLM
+    llm_url: str = field(
+        default_factory=lambda: os.getenv("TASA_LLM_URL", "http://localhost:8000/v1")
+    )
+    llm_model: str = field(
+        default_factory=lambda: os.getenv(
+            "TASA_LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct-AWQ"
+        )
+    )
+    llm_api_key: str = field(
+        default_factory=lambda: os.getenv("TASA_LLM_API_KEY", "EMPTY")
+    )
+    llm_temperature: float = 0.7
+    llm_max_tokens: int = 512
+    llm_top_p: float = 0.9
+
+    # TTS
+    tts_model: str = field(
+        default_factory=lambda: os.getenv(
+            "TASA_TTS_MODEL",
+            "/usr/share/piper/voices/en_US-lessac-medium.onnx",
+        )
+    )
+
+    # VAD
+    vad_threshold: float = field(
+        default_factory=lambda: float(os.getenv("TASA_VAD_THRESHOLD", "0.5"))
+    )
+    vad_sample_rate: int = 16000
+    silence_ms: float = 400.0
+
+    # Pipeline
+    audio_queue_size: int = 512
+    output_queue_size: int = 512
     default_timeout: float = 30.0
     default_language: str = "en"
+    session_timeout: float = 300.0

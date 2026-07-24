@@ -87,6 +87,12 @@ async def audio_websocket(websocket: WebSocket):
                     if isinstance(msg.data, bytes):
                         await websocket.send_bytes(msg.data)
 
+                elif msg.event == PipelineEvent.RESPONSE_DELAY:
+                    await websocket.send_json({
+                        "type": "status",
+                        "text": f"waiting {msg.data}s",
+                    })
+
                 elif msg.event == PipelineEvent.TTS_DONE:
                     session.set_state(DialogueState.IDLE)
                     await websocket.send_json({"type": "tts_done"})
