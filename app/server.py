@@ -17,6 +17,7 @@ from app.routes.health import router as health_router
 from app.routes.ws import router as ws_router
 from app.routes.chat import router as chat_router
 from app.routes.metrics import router as metrics_router
+from app.routes.webrtc import router as webrtc_router
 from core.pipeline import StreamingPipeline
 from core.config import CoreConfig
 from utils.logger import get_logger
@@ -123,6 +124,7 @@ app.include_router(health_router)
 app.include_router(ws_router)
 app.include_router(chat_router)
 app.include_router(metrics_router)
+app.include_router(webrtc_router)
 
 
 @app.exception_handler(Exception)
@@ -151,3 +153,8 @@ def mic_ui():
 @app.get("/ui", response_class=HTMLResponse)
 def full_ui():
     return (Path(__file__).parent / "ui.html").read_text()
+
+
+@app.get("/webrtc", response_class=HTMLResponse)
+def webrtc_ui():
+    return (Path(__file__).parent / "webrtc.html").read_text()
