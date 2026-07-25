@@ -55,6 +55,7 @@ class ConversationContext:
     turn_count: int = 0
     last_turn_duration_ms: float = 0.0
     last_transcript: str = ""
+    last_partial_transcript: str = ""
     is_question: bool = False
     rapid_exchange: bool = False
     prosody_trajectory: str = "neutral"
@@ -175,6 +176,8 @@ class StreamingPipeline:
         silence_ms = 0.0
         chunk_count = 0
         prosody_update_interval = 5
+        partial_transcript_interval = 1.5
+        last_partial_time = 0.0
 
         while self._running:
             try:
@@ -200,6 +203,7 @@ class StreamingPipeline:
                     is_speaking = True
                     silence_ms = 0.0
                     speech_buffer = bytearray(chunk)
+                    last_partial_time = time.time()
                     self.turn_detector.reset()
                     self.vad.reset()
                     await self._emit(PipelineEvent.SPEECH_START, session_id=sid)
@@ -212,6 +216,14 @@ class StreamingPipeline:
                 if chunk_count % prosody_update_interval == 0:
                     self._update_engagement_from_prosody(
                         ctx, self.turn_detector.prosody_analyzer.analyze()
+                    )
+
+                now = time.time()
+                if now - last_partial_time >= partial_transcript_interval:
+                    last_partial_time = now
+                    partial_blob = bytes(speech_buffer)
+                    asyncio.create_task(
+                        self._partial_transcribe(partial_blob, sid, ctx)
                     )
 
                 speech_dur_ms = len(speech_buffer) / (self.vad.sample_rate * 2 / 1000)
@@ -335,6 +347,14 @@ class StreamingPipeline:
         except Exception as e:
             logger.error(f"processing error session={session_id} error={e}")
             await self._emit(PipelineEvent.ERROR, str(e), session_id)
+
+    async def _partial_transcribe(
+        self, audio_blob: bytes, session_id: str, ctx: ConversationContext
+    ) -> None:
+        text = await self.stt.transcribe(audio_blob)
+        if text and text != ctx.last_partial_transcript:
+            ctx.last_partial_transcript = text
+            await self._emit(PipelineEvent.PARTIAL_TRANSCRIPT, text, session_id)
 
     async def _build_messages(
         self,

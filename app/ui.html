@@ -167,6 +167,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
           var m=JSON.parse(e.data);
           if(m.type==='speech_start'){sts('on','Listening...');dbg('Speaking detected');}
           else if(m.type==='speech_end'){sts('busy','Processing...');dbg('Processing speech');}
+          else if(m.type==='partial_transcript'){dbg('Heard: '+m.text.slice(0,60));}
           else if(m.type==='transcript'){addMsg('user',m.text);dbg('You: '+m.text.slice(0,40));}
           else if(m.type==='llm_token'){
             if(!c.querySelector('.msg.assistant')){sts('talk','Speaking...');dbg('TASA responding...');}

@@ -91,6 +91,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:transparent;displ
           var m=JSON.parse(e.data);
           if(m.type==='speech_start'){sts('on','Listening...');}
           else if(m.type==='speech_end'){sts('busy','Processing...');}
+          else if(m.type==='partial_transcript'){dbg('Heard: '+m.text.slice(0,60));}
           else if(m.type==='transcript'){lg('u',m.text);dbg('Transcript: '+m.text);}
           else if(m.type==='llm_token'){
             if(!c.querySelector('.vc-a'))sts('talk','Speaking...');

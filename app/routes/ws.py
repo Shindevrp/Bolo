@@ -54,6 +54,12 @@ async def audio_websocket(websocket: WebSocket):
                     session.set_state(DialogueState.PROCESSING)
                     await websocket.send_json({"type": "speech_end"})
 
+                elif msg.event == PipelineEvent.PARTIAL_TRANSCRIPT:
+                    await websocket.send_json({
+                        "type": "partial_transcript",
+                        "text": str(msg.data),
+                    })
+
                 elif msg.event == PipelineEvent.FINAL_TRANSCRIPT:
                     session.add_user_turn(str(msg.data))
                     await websocket.send_json({
