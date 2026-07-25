@@ -274,6 +274,7 @@ class StreamingPipeline:
     ) -> None:
         self._interrupt_event.clear()
         self._current_task = asyncio.current_task()
+        tts_tasks: list[asyncio.Task] = []
 
         try:
             stt_start = time.perf_counter()
@@ -300,31 +301,6 @@ class StreamingPipeline:
                 transcript, ctx, memory, retrieval
             )
 
-            llm_start = time.perf_counter()
-            full = ""
-            first_token = True
-
-            async for token in self.llm.generate_stream(messages):
-                if self._interrupt_event.is_set():
-                    break
-                if first_token:
-                    self._latency.measure("llm_first_token", llm_start)
-                    self._log_latency("llm_first_token")
-                    first_token = False
-                full += token
-                await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
-
-            if self._interrupt_event.is_set():
-                return
-
-            self._latency.measure("llm_full", llm_start)
-            self._log_latency("llm_full")
-
-            if memory:
-                memory.add("assistant", full)
-            if retrieval:
-                retrieval.add_to_long_term(full)
-
             delay = self.turn_timing.compute_delay(
                 pause_duration=ctx.last_turn_duration_ms / 1000,
                 engagement_score=ctx.engagement,
@@ -338,12 +314,69 @@ class StreamingPipeline:
                 )
                 await asyncio.sleep(delay)
 
+            # LLM streaming with parallel TTS (sentence-level overlap)
+            llm_start = time.perf_counter()
+            full = ""
+            sentence_buffer = ""
+            first_token = True
+
+            import re
+
+            async for token in self.llm.generate_stream(messages):
+                if self._interrupt_event.is_set():
+                    break
+                if first_token:
+                    self._latency.measure("llm_first_token", llm_start)
+                    self._log_latency("llm_first_token")
+                    first_token = False
+                full += token
+                sentence_buffer += token
+                await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
+
+                while True:
+                    match = re.search(r'(?<=[.!?])\s+', sentence_buffer)
+                    if not match:
+                        break
+                    idx = match.end()
+                    sentence = sentence_buffer[:idx].strip()
+                    sentence_buffer = sentence_buffer[idx:].strip()
+                    if sentence:
+                        task = asyncio.create_task(
+                            self._synthesize_sentence(sentence, session_id)
+                        )
+                        tts_tasks.append(task)
+
+            if self._interrupt_event.is_set():
+                for t in tts_tasks:
+                    t.cancel()
+                return
+
+            self._latency.measure("llm_full", llm_start)
+            self._log_latency("llm_full")
+
+            if memory:
+                memory.add("assistant", full)
+            if retrieval:
+                retrieval.add_to_long_term(full)
+
+            remaining = sentence_buffer.strip()
+            if remaining:
+                task = asyncio.create_task(
+                    self._synthesize_sentence(remaining, session_id)
+                )
+                tts_tasks.append(task)
+
             await self._emit(PipelineEvent.LLM_DONE, full, session_id)
 
-            asyncio.create_task(self._synthesize_response(full, session_id))
+            if tts_tasks:
+                await asyncio.gather(*tts_tasks, return_exceptions=True)
+
+            if not self._interrupt_event.is_set():
+                await self._emit(PipelineEvent.TTS_DONE, session_id=session_id)
 
         except asyncio.CancelledError:
-            pass
+            for t in tts_tasks:
+                t.cancel()
         except Exception as e:
             logger.error(f"processing error session={session_id} error={e}")
             await self._emit(PipelineEvent.ERROR, str(e), session_id)
@@ -409,6 +442,25 @@ class StreamingPipeline:
 
         return messages
 
+    async def _synthesize_sentence(self, sentence: str, session_id: str) -> None:
+        """Synthesize a single sentence and emit TTS chunks."""
+        if self._interrupt_event.is_set():
+            return
+        sr = self.tts.sample_rate
+
+        async def text_gen() -> AsyncGenerator[str, None]:
+            yield sentence
+
+        try:
+            async for audio_chunk in self.tts.synthesize_stream(text_gen()):
+                if self._interrupt_event.is_set():
+                    break
+                if isinstance(audio_chunk, bytes) and len(audio_chunk) > 0:
+                    wav = self._pcm_to_wav(audio_chunk, sr)
+                    await self._emit(PipelineEvent.TTS_CHUNK, wav, session_id)
+        except Exception as e:
+            logger.error(f"sentence tts error session={session_id} error={e}")
+
     def _pcm_to_wav(self, pcm_bytes: bytes, sample_rate: int) -> bytes:
         num_channels = 1
         bits_per_sample = 16
@@ -432,29 +484,20 @@ class StreamingPipeline:
         return bytes(header) + pcm_bytes
 
     async def _synthesize_response(self, text: str, session_id: str) -> None:
+        """Synthesize full text (used when not overlapping)."""
         try:
-            async def text_gen() -> AsyncGenerator[str, None]:
-                import re
-                sentences = [
-                    s.strip()
-                    for s in re.split(r"(?<=[.!?])\s+", text)
-                    if s.strip()
-                ]
-                for s in sentences:
-                    if self._interrupt_event.is_set():
-                        break
-                    yield s
-
-            sr = self.tts.sample_rate
-            async for audio_chunk in self.tts.synthesize_stream(text_gen()):
+            import re
+            sentences = [
+                s.strip()
+                for s in re.split(r"(?<=[.!?])\s+", text)
+                if s.strip()
+            ]
+            for s in sentences:
                 if self._interrupt_event.is_set():
                     break
-                if isinstance(audio_chunk, bytes) and len(audio_chunk) > 0:
-                    wav = self._pcm_to_wav(audio_chunk, sr)
-                    await self._emit(PipelineEvent.TTS_CHUNK, wav, session_id)
+                await self._synthesize_sentence(s, session_id)
             if not self._interrupt_event.is_set():
                 await self._emit(PipelineEvent.TTS_DONE, session_id=session_id)
-
         except Exception as e:
             logger.error(f"tts error session={session_id} error={e}")
 
