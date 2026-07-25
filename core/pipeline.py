@@ -249,8 +249,20 @@ class StreamingPipeline:
 
                     turn_decision = self.turn_detector.process_chunk(chunk, False)
 
+                    semantic_score = 0.0
+                    if ctx.last_partial_transcript:
+                        semantic_score = self.turn_detector.classifier._score_linguistic(
+                            ctx.last_partial_transcript
+                        )
+
                     adaptive_threshold = 400.0
-                    if turn_decision == "end_turn_force":
+                    if semantic_score >= 0.8:
+                        adaptive_threshold = 150.0
+                    elif semantic_score >= 0.6:
+                        adaptive_threshold = 200.0
+                    elif semantic_score <= 0.2 and len(ctx.last_partial_transcript.split()) > 2:
+                        adaptive_threshold = 500.0
+                    elif turn_decision == "end_turn_force":
                         adaptive_threshold = 200.0
                     elif turn_decision == "end_turn":
                         adaptive_threshold = 300.0
