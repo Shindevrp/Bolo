@@ -200,6 +200,11 @@ class StreamingPipeline:
 
             if is_speech:
                 if not is_speaking:
+                    if self._current_task and not self._current_task.done():
+                        await self.signal_interrupt(sid)
+                        await self._emit(
+                            PipelineEvent.INTERRUPT, session_id=sid
+                        )
                     is_speaking = True
                     silence_ms = 0.0
                     speech_buffer = bytearray(chunk)
