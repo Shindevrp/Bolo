@@ -63,6 +63,7 @@ class ConversationContext:
     rapid_exchange: bool = False
     prosody_trajectory: str = "neutral"
     dialogue_state: DialogueState = DialogueState.IDLE
+    query_complexity: str = "standard"
 
 
 class StreamingPipeline:
@@ -540,6 +541,33 @@ class StreamingPipeline:
             ctx.last_partial_transcript = text
             await self._emit(PipelineEvent.PARTIAL_TRANSCRIPT, text, session_id)
 
+    def _classify_query_complexity(self, text: str) -> str:
+        text_lower = text.lower().strip()
+        word_count = len(text_lower.split())
+
+        greeting_words = {"hi", "hello", "hey", "yo", "sup", "good morning",
+                          "good afternoon", "good evening", "howdy"}
+        if word_count <= 3 and any(g in text_lower for g in greeting_words):
+            return "simple"
+
+        if word_count <= 2:
+            return "simple"
+
+        code_indicators = {"code", "function", "script", "program", "debug",
+                           "error", "exception", "syntax", "algorithm"}
+        if any(w in text_lower for w in code_indicators):
+            return "complex"
+
+        complex_indicators = {"explain", "compare", "contrast", "analyze",
+                              "why", "how does", "summarize", "difference between"}
+        if any(w in text_lower for w in complex_indicators):
+            return "complex"
+
+        if word_count > 20:
+            return "complex"
+
+        return "standard"
+
     async def _build_messages(
         self,
         transcript: str,
@@ -555,10 +583,14 @@ class StreamingPipeline:
             if retrieved:
                 has_context = True
 
+        complexity = self._classify_query_complexity(transcript)
+        ctx.query_complexity = complexity
+
         system_prompt = build_system_prompt(
             engagement=ctx.engagement,
             turn_count=ctx.turn_count,
             has_context=has_context,
+            complexity=complexity,
         )
 
         tool_block = self._tool_registry.system_prompt_block()
