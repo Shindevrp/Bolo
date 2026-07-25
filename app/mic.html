@@ -43,7 +43,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:transparent;displ
 (function(){
   var b=document.getElementById('vcb'),d=document.getElementById('vcd'),l=document.getElementById('vcl'),c=document.getElementById('vcc'),db=document.getElementById('vdbg');
   var ws=null,st=null,ac=null,pr=null,sc=null,act=false,reconn=null,retryDelay=1000,maxRetryDelay=30000,
-      audioQ=[],audioPlaying=false;
+      audioQ=[],audioPlaying=false,gainNode=null;
   function dbg(t){db.textContent=t;}
   function sts(cl,t){d.className='vc-dot'+(cl?' '+cl:'');l.textContent=t;}
   function lg(tp,tx){
@@ -84,6 +84,17 @@ body{font-family:system-ui,-apple-system,sans-serif;background:transparent;displ
         };
       };
       ws.onmessage=function(e){
+        function duckAudio(){
+          if(gainNode){
+            try{gainNode.gain.linearRampToValueAtTime(0,ac.currentTime+0.05);}catch(e){}
+          }
+          audioQ=[];audioPlaying=false;
+        }
+        function setupGain(){
+          if(!gainNode&&ac){
+            try{gainNode=ac.createGain();gainNode.gain.value=1;gainNode.connect(ac.destination);}catch(e){gainNode=null;}
+          }
+        }
         function playAudio(buf){
           audioQ.push(buf);
           if(!audioPlaying) processAudioQ();
@@ -93,10 +104,13 @@ body{font-family:system-ui,-apple-system,sans-serif;background:transparent;displ
           audioPlaying=true;
           var buf=audioQ.shift();
           if(!ac) return processAudioQ();
+          setupGain();
           try{
             ac.decodeAudioData(buf,function(audio){
               var src=ac.createBufferSource();
-              src.buffer=audio;src.connect(ac.destination);
+              src.buffer=audio;
+              if(gainNode) src.connect(gainNode);
+              else src.connect(ac.destination);
               src.onended=function(){processAudioQ();};
               src.start();
             },function(){processAudioQ();});
@@ -119,7 +133,8 @@ body{font-family:system-ui,-apple-system,sans-serif;background:transparent;displ
         else if(m.type==='llm_done'){sts('','Speaking...');}
         else if(m.type==='status'){sts('',m.text);}
         else if(m.type==='tts_done'){setTimeout(stop,800);}
-          else if(m.type==='backchannel'){dbg('Backchannel: '+m.text);}
+          else if(m.type==='interrupt'){duckAudio();sts('on','Listening...');dbg('Interruption detected');}
+        else if(m.type==='backchannel'){dbg('Backchannel: '+m.text);}
         }catch(x){dbg('Msg err: '+x.message);}
       };
       ws.onerror=function(e){dbg('WS error');sts('','Connection error');};

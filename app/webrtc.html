@@ -62,7 +62,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
 (function(){
   var b=document.getElementById('vcb'),d=document.getElementById('vcd'),l=document.getElementById('vcl'),
       c=document.getElementById('vcc'),db=document.getElementById('vdbg'),er=document.getElementById('verr');
-  var ws=null,pc=null,localStream=null,act=false,
+  var ws=null,pc=null,localStream=null,act=false,audioEl=null,
       retryDelay=1000,maxRetryDelay=30000;
   var iceServers=[{urls:'stun:stun.l.google.com:19302'}];
 
@@ -108,11 +108,24 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
         }
       };
 
+      function duckAudio(){
+        if(audioEl){
+          var vol=audioEl.volume;
+          var step=vol/10;
+          function fade(){
+            vol=Math.max(0,vol-step);
+            audioEl.volume=vol;
+            if(vol>0) setTimeout(fade,5);
+          }
+          fade();
+        }
+      }
       pc.ontrack=function(e){
         dbg('Receiving audio track');
-        var audioEl=document.createElement('audio');
+        audioEl=document.createElement('audio');
         audioEl.srcObject=e.streams[0];
         audioEl.autoplay=true;
+        audioEl.volume=1;
       };
 
       pc.oniceconnectionstatechange=function(){
@@ -154,7 +167,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
         else if(m.type==='llm_done'){sts('','Done');dbg('Response complete');}
         else if(m.type==='tts_done'){setTimeout(stop,800);}
         else if(m.type==='backchannel'){dbg('TASA: '+m.text);}
-        else if(m.type==='interrupt'){sts('on','Listening...');dbg('Interruption detected');}
+        else if(m.type==='interrupt'){duckAudio();sts('on','Listening...');dbg('Interruption detected');}
         else if(m.type==='status'){dbg(m.text);}
         else if(m.type==='error'){err(m.text);}
         else if(m.type==='pong'){}
