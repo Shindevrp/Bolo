@@ -282,10 +282,40 @@ class StreamingPipeline:
         tts_tasks: list[asyncio.Task] = []
 
         try:
+            memory = self._memory(session_id)
+            retrieval = self._retrieval(session_id)
+
+            # Start STT concurrently
             stt_start = time.perf_counter()
-            transcript = await self.stt.transcribe(audio_blob)
+            stt_task = asyncio.create_task(self.stt.transcribe(audio_blob))
+
+            # Speculative LLM: use last partial transcript to start early
+            partial = ctx.last_partial_transcript
+            spec_full: str | None = None
+            spec_task: asyncio.Task | None = None
+
+            if partial and len(partial.split()) >= 2:
+                spec_messages = await self._build_messages(
+                    partial, ctx, memory, retrieval
+                )
+
+                async def _spec_llm():
+                    result = ""
+                    async for tok in self.llm.generate_stream(spec_messages):
+                        if self._interrupt_event.is_set():
+                            return None
+                        result += tok
+                    return result
+
+                spec_task = asyncio.create_task(_spec_llm())
+
+            # Wait for STT to finish
+            transcript = await stt_task
             self._latency.measure("stt", stt_start)
+
             if not transcript:
+                if spec_task:
+                    spec_task.cancel()
                 return
 
             ctx.last_transcript = transcript
@@ -299,13 +329,30 @@ class StreamingPipeline:
             else:
                 ctx.engagement = max(0.1, ctx.engagement - 0.02)
 
-            memory = self._memory(session_id)
-            retrieval = self._retrieval(session_id)
+            # Check if speculative LLM result can be reused
+            used_speculation = False
+            if spec_task and partial and transcript.startswith(partial):
+                try:
+                    spec_full = await asyncio.wait_for(
+                        asyncio.shield(spec_task), timeout=30.0
+                    )
+                    if spec_full is not None:
+                        used_speculation = True
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
 
-            messages = await self._build_messages(
-                transcript, ctx, memory, retrieval
-            )
+            if not used_speculation:
+                if spec_task and not spec_task.done():
+                    spec_task.cancel()
 
+                messages = await self._build_messages(
+                    transcript, ctx, memory, retrieval
+                )
+
+            if memory:
+                memory.add("user", transcript)
+
+            # Compute response timing delay
             delay = self.turn_timing.compute_delay(
                 pause_duration=ctx.last_turn_duration_ms / 1000,
                 engagement_score=ctx.engagement,
@@ -319,45 +366,66 @@ class StreamingPipeline:
                 )
                 await asyncio.sleep(delay)
 
-            # LLM streaming with parallel TTS (sentence-level overlap)
-            llm_start = time.perf_counter()
-            full = ""
-            sentence_buffer = ""
-            first_token = True
-
             import re
 
-            async for token in self.llm.generate_stream(messages):
-                if self._interrupt_event.is_set():
-                    break
-                if first_token:
-                    self._latency.measure("llm_first_token", llm_start)
-                    self._log_latency("llm_first_token")
-                    first_token = False
-                full += token
-                sentence_buffer += token
-                await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
-
-                while True:
-                    match = re.search(r'(?<=[.!?])\s+', sentence_buffer)
-                    if not match:
-                        break
-                    idx = match.end()
-                    sentence = sentence_buffer[:idx].strip()
-                    sentence_buffer = sentence_buffer[idx:].strip()
-                    if sentence:
+            if used_speculation:
+                full = spec_full or ""
+                sentences = [
+                    s.strip()
+                    for s in re.split(r"(?<=[.!?])\s+", full)
+                    if s.strip()
+                ]
+                sentence_buffer = ""
+                if sentences:
+                    for sentence in sentences[:-1]:
+                        if self._interrupt_event.is_set():
+                            break
                         task = asyncio.create_task(
                             self._synthesize_sentence(sentence, session_id)
                         )
                         tts_tasks.append(task)
+                    sentence_buffer = sentences[-1]
+                await self._emit(PipelineEvent.LLM_DONE, full, session_id)
+            else:
+                # LLM streaming with parallel TTS (sentence-level overlap)
+                llm_start = time.perf_counter()
+                full = ""
+                sentence_buffer = ""
+                first_token = True
 
-            if self._interrupt_event.is_set():
-                for t in tts_tasks:
-                    t.cancel()
-                return
+                async for token in self.llm.generate_stream(messages):
+                    if self._interrupt_event.is_set():
+                        break
+                    if first_token:
+                        self._latency.measure("llm_first_token", llm_start)
+                        self._log_latency("llm_first_token")
+                        first_token = False
+                    full += token
+                    sentence_buffer += token
+                    await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
 
-            self._latency.measure("llm_full", llm_start)
-            self._log_latency("llm_full")
+                    while True:
+                        match = re.search(r'(?<=[.!?])\s+', sentence_buffer)
+                        if not match:
+                            break
+                        idx = match.end()
+                        sentence = sentence_buffer[:idx].strip()
+                        sentence_buffer = sentence_buffer[idx:].strip()
+                        if sentence:
+                            task = asyncio.create_task(
+                                self._synthesize_sentence(sentence, session_id)
+                            )
+                            tts_tasks.append(task)
+
+                if self._interrupt_event.is_set():
+                    for t in tts_tasks:
+                        t.cancel()
+                    return
+
+                self._latency.measure("llm_full", llm_start)
+                self._log_latency("llm_full")
+
+                await self._emit(PipelineEvent.LLM_DONE, full, session_id)
 
             if memory:
                 memory.add("assistant", full)
@@ -370,8 +438,6 @@ class StreamingPipeline:
                     self._synthesize_sentence(remaining, session_id)
                 )
                 tts_tasks.append(task)
-
-            await self._emit(PipelineEvent.LLM_DONE, full, session_id)
 
             if tts_tasks:
                 await asyncio.gather(*tts_tasks, return_exceptions=True)
@@ -439,9 +505,6 @@ class StreamingPipeline:
             if memory.token_estimate() > 3072:
                 memory.truncate_to_budget(3072)
                 logger.debug(f"truncated memory for session {ctx.turn_count}")
-
-        if memory:
-            memory.add("user", transcript)
 
         messages.append({"role": "user", "content": transcript})
 
