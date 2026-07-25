@@ -18,6 +18,7 @@ from modules.backchannel.generator import BackchannelGenerator
 from modules.backchannel.timing import BackchannelTiming
 from modules.memory.session import SessionMemory
 from modules.memory.retrieval import RetrievalModule
+from core.state import DialogueState
 from modules.dialogue.prompts import build_system_prompt
 from modules.metrics.latency import LatencyTracker
 from modules.metrics.logger import MetricsLogger
@@ -59,6 +60,7 @@ class ConversationContext:
     is_question: bool = False
     rapid_exchange: bool = False
     prosody_trajectory: str = "neutral"
+    dialogue_state: DialogueState = DialogueState.IDLE
 
 
 class StreamingPipeline:
@@ -202,10 +204,12 @@ class StreamingPipeline:
                 if not is_speaking:
                     if self._current_task and not self._current_task.done():
                         await self.signal_interrupt(sid)
+                        ctx.dialogue_state = DialogueState.LISTENING
                         await self._emit(
                             PipelineEvent.INTERRUPT, session_id=sid
                         )
                     is_speaking = True
+                    ctx.dialogue_state = DialogueState.LISTENING
                     silence_ms = 0.0
                     speech_buffer = bytearray(chunk)
                     last_partial_time = time.time()
@@ -280,6 +284,7 @@ class StreamingPipeline:
                             self.vad.sample_rate * 2 / 1000
                         )
                         ctx.turn_count += 1
+                        ctx.dialogue_state = DialogueState.PROCESSING
 
                         await self._emit(PipelineEvent.SPEECH_END, session_id=sid)
                         asyncio.create_task(
@@ -382,6 +387,7 @@ class StreamingPipeline:
 
             if used_speculation:
                 full = spec_full or ""
+                ctx.dialogue_state = DialogueState.INTERRUPTIBLE
                 sentences = [
                     s.strip()
                     for s in re.split(r"(?<=[.!?])\s+", full)
@@ -409,6 +415,7 @@ class StreamingPipeline:
                     if self._interrupt_event.is_set():
                         break
                     if first_token:
+                        ctx.dialogue_state = DialogueState.INTERRUPTIBLE
                         self._latency.measure("llm_first_token", llm_start)
                         self._log_latency("llm_first_token")
                         first_token = False
@@ -455,6 +462,7 @@ class StreamingPipeline:
                 await asyncio.gather(*tts_tasks, return_exceptions=True)
 
             if not self._interrupt_event.is_set():
+                ctx.dialogue_state = DialogueState.IDLE
                 await self._emit(PipelineEvent.TTS_DONE, session_id=session_id)
 
         except asyncio.CancelledError:

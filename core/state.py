@@ -4,13 +4,37 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any
 
+from utils.logger import get_logger
+
+logger = get_logger("state")
+
 
 class DialogueState(Enum):
     IDLE = auto()
     LISTENING = auto()
     PROCESSING = auto()
-    RESPONDING = auto()
     INTERRUPTIBLE = auto()
+
+    def can_transition_to(self, target: DialogueState) -> bool:
+        allowed = {
+            DialogueState.IDLE: {DialogueState.LISTENING},
+            DialogueState.LISTENING: {DialogueState.PROCESSING, DialogueState.IDLE},
+            DialogueState.PROCESSING: {DialogueState.INTERRUPTIBLE, DialogueState.IDLE},
+            DialogueState.INTERRUPTIBLE: {
+                DialogueState.IDLE, DialogueState.LISTENING,
+            },
+        }
+        return target in allowed.get(self, set())
+
+    TRANSITION_NAMES = {
+        (DialogueState.IDLE, DialogueState.LISTENING): "start_speech",
+        (DialogueState.LISTENING, DialogueState.PROCESSING): "end_speech",
+        (DialogueState.PROCESSING, DialogueState.INTERRUPTIBLE): "first_token",
+        (DialogueState.INTERRUPTIBLE, DialogueState.IDLE): "response_done",
+        (DialogueState.INTERRUPTIBLE, DialogueState.LISTENING): "barge_in",
+        (DialogueState.LISTENING, DialogueState.IDLE): "cancel",
+        (DialogueState.PROCESSING, DialogueState.IDLE): "cancel",
+    }
 
 
 @dataclass
@@ -62,4 +86,12 @@ class SessionState:
         self.engagement_score = 0.5 * recency + 0.5 * depth
 
     def set_state(self, new_state: DialogueState) -> None:
+        old = self.state
+        if old == new_state:
+            return
+        if not old.can_transition_to(new_state):
+            logger.warning(
+                f"invalid state transition {old.name} -> {new_state.name}"
+            )
+            return
         self.state = new_state
