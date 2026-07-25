@@ -62,7 +62,8 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
 (function(){
   var b=document.getElementById('vcb'),d=document.getElementById('vcd'),l=document.getElementById('vcl'),
       c=document.getElementById('vcc'),db=document.getElementById('vdbg'),er=document.getElementById('verr');
-  var ws=null,pc=null,localStream=null,act=false;
+  var ws=null,pc=null,localStream=null,act=false,
+      retryDelay=1000,maxRetryDelay=30000;
   var iceServers=[{urls:'stun:stun.l.google.com:19302'}];
 
   function dbg(t){db.textContent=t;}
@@ -129,7 +130,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
         }).then(function(){
           ws.send(JSON.stringify({type:'offer',sdp:pc.localDescription.sdp}));
           dbg('Offer sent');
-          act=true;b.classList.add('rec');b.textContent='🔴';sts('on','Listening...');
+          act=true;retryDelay=1000;b.classList.add('rec');b.textContent='🔴';sts('on','Listening...');
           c.innerHTML='<div class="empty-state">Speak below...</div>';
         }).catch(function(e){err('Offer error: '+e.message);});
       }).catch(function(e){err('Mic denied: '+e.message);});
@@ -161,7 +162,17 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
     };
 
     ws.onerror=function(){err('Signaling error');};
-    ws.onclose=function(){dbg('Disconnected');};
+    function reconnect(){
+      if(!act)return;
+      var delay=retryDelay+Math.random()*retryDelay;
+      dbg('Reconnecting in '+(delay/1000).toFixed(1)+'s...');
+      setTimeout(function(){
+        if(!act)return;
+        retryDelay=Math.min(retryDelay*2,maxRetryDelay);
+        go();
+      },delay);
+    }
+    ws.onclose=function(){dbg('Disconnected');reconnect();};
   }
 
   function stop(){

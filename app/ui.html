@@ -100,7 +100,8 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
   /* ---------- Voice ---------- */
   var b=document.getElementById('vcb'),d=document.getElementById('vcd'),l=document.getElementById('vcl'),
       c=document.getElementById('vcc'),db=document.getElementById('vdbg'),er=document.getElementById('verr');
-  var ws=null,st=null,ac=null,pr=null,sc=null,act=false,reconn=null,mode='voice';
+  var ws=null,st=null,ac=null,pr=null,sc=null,act=false,reconn=null,mode='voice',
+      retryDelay=1000,maxRetryDelay=30000,audioQ=[],audioPlaying=false;
 
   function dbg(t){db.textContent=t;}
   function err(t){er.textContent=t;setTimeout(function(){if(er.textContent===t)er.textContent='';},5000);}
@@ -141,7 +142,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
       var host=location.host;
       ws=new WebSocket(proto+'//'+host+'/ws/audio');ws.binaryType='arraybuffer';
       ws.onopen=function(){
-        act=true;b.classList.add('rec');b.textContent='🔴';sts('on','Listening...');
+        act=true;retryDelay=1000;b.classList.add('rec');b.textContent='🔴';sts('on','Listening...');
         c.innerHTML='<div class="empty-state">Speak or type below...</div>';
         pr.onaudioprocess=function(e){
           try{
@@ -151,16 +152,27 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
           }catch(x){}
         };
       };
+      function playAudio(buf){
+        audioQ.push(buf);
+        if(!audioPlaying) processAudioQ();
+      }
+      function processAudioQ(){
+        if(audioQ.length===0){audioPlaying=false;return;}
+        audioPlaying=true;
+        var buf=audioQ.shift();
+        if(!ac) return processAudioQ();
+        try{
+          ac.decodeAudioData(buf,function(audio){
+            var src=ac.createBufferSource();
+            src.buffer=audio;src.connect(ac.destination);
+            src.onended=function(){processAudioQ();};
+            src.start();
+          },function(){processAudioQ();});
+        }catch(x){processAudioQ();}
+      }
       ws.onmessage=function(e){
         if(e.data instanceof ArrayBuffer){
-          if(ac){
-            try{
-              ac.decodeAudioData(e.data,function(audio){
-                var src=ac.createBufferSource();
-                src.buffer=audio;src.connect(ac.destination);src.start();
-              },function(){});
-            }catch(x){}
-          }
+          playAudio(e.data);
           return;
         }
         try{
@@ -182,9 +194,19 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
         }catch(x){dbg('Parse err');}
       };
       ws.onerror=function(){err('Connection failed');sts('','Connection error');};
+      function reconnect(){
+        if(!act)return;
+        var delay=retryDelay+Math.random()*retryDelay;
+        dbg('Reconnecting in '+(delay/1000).toFixed(1)+'s...');
+        reconn=setTimeout(function(){
+          if(!act)return;
+          retryDelay=Math.min(retryDelay*2,maxRetryDelay);
+          startVoice();
+        },delay);
+      }
       ws.onclose=function(e){
         dbg('Disconnected (code='+e.code+')');
-        if(act){reconn=setTimeout(function(){if(act)startVoice();},2000);}
+        reconnect();
       };
     })
     .catch(function(e){
@@ -200,6 +222,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
     if(sc){try{sc.disconnect();}catch(e){}sc=null;}
     if(st){st.getTracks().forEach(function(t){t.stop();});st=null;}
     if(ws){try{ws.close();}catch(e){}ws=null;}
+    audioQ=[];audioPlaying=false;
     b.classList.remove('rec');b.textContent='🎤';
     dbg('');var t=l.textContent;
     if(t==='Listening...'||t==='Processing...'||t==='Done')sts('','Click mic to speak');
