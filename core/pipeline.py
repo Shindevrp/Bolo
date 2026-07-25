@@ -22,6 +22,8 @@ from core.state import DialogueState
 from modules.dialogue.prompts import build_system_prompt
 from modules.metrics.latency import LatencyTracker
 from modules.metrics.logger import MetricsLogger
+from modules.tools.registry import ToolRegistry
+from modules.tools.builtin import get_builtin_tools
 from utils.logger import get_logger
 
 logger = get_logger("pipeline")
@@ -91,6 +93,7 @@ class StreamingPipeline:
 
         self._latency = LatencyTracker()
         self._metrics = MetricsLogger()
+        self._tool_registry = get_builtin_tools()
         self._audio_queue: asyncio.Queue[PipelineMessage] = asyncio.Queue(512)
         self._output_queue: asyncio.Queue[PipelineMessage] = asyncio.Queue(512)
         self._interrupt_event = asyncio.Event()
@@ -385,6 +388,9 @@ class StreamingPipeline:
 
             import re
 
+            full = ""
+            token_buffer: list[str] = []
+
             if used_speculation:
                 full = spec_full or ""
                 ctx.dialogue_state = DialogueState.INTERRUPTIBLE
@@ -403,11 +409,9 @@ class StreamingPipeline:
                         )
                         tts_tasks.append(task)
                     sentence_buffer = sentences[-1]
-                await self._emit(PipelineEvent.LLM_DONE, full, session_id)
             else:
                 # LLM streaming with parallel TTS (sentence-level overlap)
                 llm_start = time.perf_counter()
-                full = ""
                 sentence_buffer = ""
                 first_token = True
 
@@ -421,7 +425,7 @@ class StreamingPipeline:
                         first_token = False
                     full += token
                     sentence_buffer += token
-                    await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
+                    token_buffer.append(token)
 
                     while True:
                         match = re.search(r'(?<=[.!?])\s+', sentence_buffer)
@@ -444,12 +448,68 @@ class StreamingPipeline:
                 self._latency.measure("llm_full", llm_start)
                 self._log_latency("llm_full")
 
-                await self._emit(PipelineEvent.LLM_DONE, full, session_id)
-
             if memory:
                 memory.add("assistant", full)
             if retrieval:
                 retrieval.add_to_long_term(full)
+
+            # Check for tool calls in the response
+            tool_calls = self._tool_registry.find_calls(full)
+            if tool_calls and not self._interrupt_event.is_set():
+                tool_results = await asyncio.gather(
+                    *[self._tool_registry.execute_call(c) for c in tool_calls]
+                )
+                followup_messages = messages if not used_speculation else spec_messages
+                followup_messages = list(followup_messages)
+                followup_messages.append({
+                    "role": "assistant",
+                    "content": full,
+                })
+                for tr in tool_results:
+                    followup_messages.append({
+                        "role": "tool",
+                        "content": f"{tr['tool']} result: {tr['result']}",
+                    })
+                followup_messages.append({
+                    "role": "user",
+                    "content": "Continue naturally with the tool results.",
+                })
+
+                full = ""
+                sentence_buffer = ""
+                first_token = True
+                async for token in self.llm.generate_stream(followup_messages):
+                    if self._interrupt_event.is_set():
+                        break
+                    if first_token:
+                        first_token = False
+                    full += token
+                    sentence_buffer += token
+                    await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
+                    while True:
+                        match = re.search(r'(?<=[.!?])\s+', sentence_buffer)
+                        if not match:
+                            break
+                        idx = match.end()
+                        sentence = sentence_buffer[:idx].strip()
+                        sentence_buffer = sentence_buffer[idx:].strip()
+                        if sentence:
+                            task = asyncio.create_task(
+                                self._synthesize_sentence(sentence, session_id)
+                            )
+                            tts_tasks.append(task)
+
+                if self._interrupt_event.is_set():
+                    for t in tts_tasks:
+                        t.cancel()
+                    return
+
+            else:
+                # No tool calls — emit buffered tokens
+                for t in token_buffer:
+                    await self._emit(PipelineEvent.LLM_TOKEN, t, session_id)
+
+            await self._emit(PipelineEvent.LLM_DONE, full, session_id)
 
             remaining = sentence_buffer.strip()
             if remaining:
@@ -500,6 +560,10 @@ class StreamingPipeline:
             turn_count=ctx.turn_count,
             has_context=has_context,
         )
+
+        tool_block = self._tool_registry.system_prompt_block()
+        if tool_block:
+            system_prompt += tool_block
 
         messages: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
