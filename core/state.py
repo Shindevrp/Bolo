@@ -26,15 +26,16 @@ class DialogueState(Enum):
         }
         return target in allowed.get(self, set())
 
-    TRANSITION_NAMES = {
-        (DialogueState.IDLE, DialogueState.LISTENING): "start_speech",
-        (DialogueState.LISTENING, DialogueState.PROCESSING): "end_speech",
-        (DialogueState.PROCESSING, DialogueState.INTERRUPTIBLE): "first_token",
-        (DialogueState.INTERRUPTIBLE, DialogueState.IDLE): "response_done",
-        (DialogueState.INTERRUPTIBLE, DialogueState.LISTENING): "barge_in",
-        (DialogueState.LISTENING, DialogueState.IDLE): "cancel",
-        (DialogueState.PROCESSING, DialogueState.IDLE): "cancel",
-    }
+
+TRANSITION_NAMES: dict[tuple[DialogueState, DialogueState], str] = {
+    (DialogueState.IDLE, DialogueState.LISTENING): "start_speech",
+    (DialogueState.LISTENING, DialogueState.PROCESSING): "end_speech",
+    (DialogueState.PROCESSING, DialogueState.INTERRUPTIBLE): "first_token",
+    (DialogueState.INTERRUPTIBLE, DialogueState.IDLE): "response_done",
+    (DialogueState.INTERRUPTIBLE, DialogueState.LISTENING): "barge_in",
+    (DialogueState.LISTENING, DialogueState.IDLE): "cancel",
+    (DialogueState.PROCESSING, DialogueState.IDLE): "cancel",
+}
 
 
 @dataclass
