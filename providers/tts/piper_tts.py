@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -8,7 +9,7 @@ import piper
 import numpy as np
 
 from providers.tts.base import TTSProvider
-from modules.tts.prosody import ProsodyProfile
+from modules.tts.prosody import ProsodyProfile, pause_for, split_emphasis
 
 
 class PiperTTS(TTSProvider):
@@ -73,25 +74,78 @@ class PiperTTS(TTSProvider):
         count = int(seconds * self.sample_rate) * 2
         return b"\x00\x00" * count
 
-    def _split_sentences(self, text: str) -> list[str]:
-        import re
-        return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    def _split_sentences(self, text: str) -> list[tuple[str, str]]:
+        """Return [(sentence, terminator)] with ellipsis-aware boundaries."""
+        out: list[tuple[str, str]] = []
+        cur = ""
+        i = 0
+        n = len(text)
+        while i < n:
+            if text.startswith("...", i) or text[i] == "…":
+                if cur.strip():
+                    out.append((cur.strip(), "..."))
+                cur = ""
+                i += 3 if text.startswith("...", i) else 1
+                while i < n and text[i].isspace():
+                    i += 1
+                continue
+            c = text[i]
+            cur += c
+            if c in ".!?":
+                j = i + 1
+                while j < n and text[j] in "'\")\u201d\u2019]":
+                    cur += text[j]
+                    j += 1
+                if j >= n or text[j].isspace():
+                    if cur.strip():
+                        out.append((cur.strip(), c))
+                    cur = ""
+                    i = j
+                    while i < n and text[i].isspace():
+                        i += 1
+                    continue
+            i += 1
+        if cur.strip():
+            out.append((cur.strip(), ""))
+        return out
 
     def _synthesize_sentence_chunks(
         self, sentence: str, syn_config: piper.SynthesisConfig
     ) -> list[bytes]:
-        chunks = []
-        for chunk in self.voice.synthesize(sentence, syn_config=syn_config):
-            chunks.append(bytes(chunk.audio_int16_bytes))
-        return chunks
+        segments = split_emphasis(sentence)
+        if len(segments) <= 1:
+            chunks = self.voice.synthesize(sentence, syn_config=syn_config)
+            return [bytes(c.audio_int16_bytes) for c in chunks]
+        out: list[bytes] = []
+        base_length = syn_config.length_scale or 1.0
+        base_noise = syn_config.noise_scale or 0.5
+        for seg, emphasized in segments:
+            if not seg.strip():
+                continue
+            cfg = syn_config
+            if emphasized:
+                cfg = replace(
+                    syn_config,
+                    length_scale=base_length * 0.85,
+                    noise_scale=min(0.7, base_noise + 0.05),
+                    volume=1.1,
+                )
+            for c in self.voice.synthesize(seg, syn_config=cfg):
+                out.append(bytes(c.audio_int16_bytes))
+        return out
 
     def _synthesize_to_bytes(
         self, sentence: str, syn_config: piper.SynthesisConfig
     ) -> bytes:
         audio = bytearray()
-        for chunk in self.voice.synthesize(sentence, syn_config=syn_config):
-            audio.extend(chunk.audio_int16_bytes)
+        for chunk in self._synthesize_sentence_chunks(sentence, syn_config):
+            audio.extend(chunk)
         return bytes(audio)
+
+    def _pause_after(self, terminator: str, prosody: ProsodyProfile | None) -> bytes:
+        return self._silence_pad(
+            pause_for(terminator, self._sentence_silence(prosody))
+        )
 
     async def synthesize_stream(
         self,
@@ -99,23 +153,23 @@ class PiperTTS(TTSProvider):
         prosody: ProsodyProfile | None = None,
     ) -> AsyncGenerator[bytes, None]:
         syn_config = self._config_for(prosody)
-        pad = self._silence_pad(self._sentence_silence(prosody))
         buffer = ""
         async for chunk in text_chunks:
             buffer += chunk
             sentences = self._split_sentences(buffer)
             if not sentences:
                 continue
-            for sentence in sentences[:-1]:
+            for sentence, terminator in sentences[:-1]:
                 chunks = await asyncio.to_thread(
                     self._synthesize_sentence_chunks, sentence, syn_config
                 )
                 for audio_chunk in chunks:
                     yield audio_chunk
                     await asyncio.sleep(0)
+                pad = self._pause_after(terminator, prosody)
                 if pad:
                     yield pad
-            buffer = sentences[-1]
+            buffer = sentences[-1][0]
 
         if buffer.strip():
             chunks = await asyncio.to_thread(
@@ -128,14 +182,13 @@ class PiperTTS(TTSProvider):
         self, text: str, prosody: ProsodyProfile | None = None
     ) -> bytes:
         syn_config = self._config_for(prosody)
-        pad = self._silence_pad(self._sentence_silence(prosody))
         audio = bytearray()
         sentences = self._split_sentences(text)
-        for i, sentence in enumerate(sentences):
+        for i, (sentence, terminator) in enumerate(sentences):
             chunk = await asyncio.to_thread(
                 self._synthesize_to_bytes, sentence, syn_config
             )
             audio.extend(chunk)
             if i < len(sentences) - 1:
-                audio.extend(pad)
+                audio.extend(self._pause_after(terminator, prosody))
         return bytes(audio)

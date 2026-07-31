@@ -1,7 +1,12 @@
 import asyncio
 
 from core.pipeline import ConversationContext, StreamingPipeline
-from modules.tts.prosody import ProsodySelector
+from modules.tts.prosody import (
+    ProsodySelector,
+    classify_sentiment,
+    pause_for,
+    split_emphasis,
+)
 from tests.test_streaming import (
     FakeLLMText,
     FakeSTTText,
@@ -76,6 +81,88 @@ class TestProsodySelector:
         assert item.label == "list"
         assert item.length_scale == 1.0
 
+    def test_negative_sentiment_is_supportive_and_slower(self) -> None:
+        sel = ProsodySelector()
+        supportive = sel.select(
+            "Let me help you.", user_sentiment="negative"
+        )
+        neutral = sel.select("Let me help you.", user_sentiment="neutral")
+        assert "supportive" in supportive.label
+        assert supportive.length_scale > neutral.length_scale
+
+    def test_positive_sentiment_is_warm(self) -> None:
+        sel = ProsodySelector()
+        warm = sel.select("Let me help you.", user_sentiment="positive")
+        assert "warm" in warm.label
+        assert warm.noise_scale > ProsodySelector().select(
+            "Let me help you."
+        ).noise_scale
+
+    def test_repetition_is_patient_and_slower(self) -> None:
+        sel = ProsodySelector()
+        repeated = sel.select("Let me help you.", user_repeated=True)
+        normal = sel.select("Let me help you.", user_repeated=False)
+        assert "patient" in repeated.label
+        assert repeated.length_scale > normal.length_scale
+
+    def test_first_response_opens_slower(self) -> None:
+        sel = ProsodySelector()
+        opening = sel.select("Hello there.", first=True, first_response=True)
+        normal = sel.select("Hello there.", first=False, first_response=False)
+        assert "opening" in opening.label
+        assert opening.length_scale > normal.length_scale
+
+    def test_complex_query_is_structured_and_slower(self) -> None:
+        sel = ProsodySelector()
+        complex_p = sel.select(
+            "Here is the answer.", complexity="complex"
+        )
+        standard_p = sel.select("Here is the answer.", complexity="standard")
+        assert "structured" in complex_p.label
+        assert complex_p.length_scale > standard_p.length_scale
+
+    def test_ongoing_conversation_is_casual_and_faster(self) -> None:
+        sel = ProsodySelector()
+        casual = sel.select("Right, sure.", turn_count=6)
+        fresh = sel.select("Right, sure.", turn_count=2)
+        assert "casual" in casual.label
+        assert casual.length_scale < fresh.length_scale
+
+
+class TestClassifySentiment:
+    def test_frustration_is_negative(self) -> None:
+        assert classify_sentiment("this is frustrating and wrong") == "negative"
+
+    def test_praise_is_positive(self) -> None:
+        assert classify_sentiment("that is amazing great work") == "positive"
+
+    def test_neutral_text(self) -> None:
+        assert classify_sentiment("what is the time") == "neutral"
+
+
+class TestPauseFor:
+    def test_ellipsis_pause_is_largest(self) -> None:
+        assert pause_for("...", 0.1) > pause_for(".", 0.1)
+        assert pause_for("...", 0.1) >= 0.25
+
+    def test_question_pause_longer_than_period(self) -> None:
+        assert pause_for("?", 0.1) > pause_for(".", 0.1)
+
+    def test_no_terminator_is_short(self) -> None:
+        assert pause_for("", 0.1) < pause_for(".", 0.1)
+
+
+class TestSplitEmphasis:
+    def test_all_caps_word_marked_emphasized(self) -> None:
+        segments = split_emphasis("This is IMPORTANT to remember.")
+        emph = [seg for seg, flag in segments if flag]
+        assert emph == ["IMPORTANT"]
+        assert any(not flag for _, flag in segments)
+
+    def test_no_all_caps_returns_single_segment(self) -> None:
+        segments = split_emphasis("This is normal speech.")
+        assert segments == [("This is normal speech.", False)]
+
 
 class TestProsodyPipelineIntegration:
     def test_statement_uses_conversational_profile(self) -> None:
@@ -85,7 +172,9 @@ class TestProsodyPipelineIntegration:
                 b"\x00" * 1600, "sess", ConversationContext()
             )
             assert p.tts.synthesized
-            assert "conversational" in p.tts.prosody_labels
+            labels = " ".join(p.tts.prosody_labels)
+            assert "conversational" in labels
+            assert "opening" in labels
 
         asyncio.run(run())
 

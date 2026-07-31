@@ -40,6 +40,9 @@ HUMAN_LIKE_BEHAVIORS = (
     "  - Use soft transitions like 'so', 'actually', 'by the way'\n"
     "  - When thinking, use pauses like 'hmm... let me think'\n"
     "  - If explaining something complex, break it into smaller chunks\n"
+    "  - Stress the single most important word in a sentence by writing "
+    "it in ALL CAPS (the voice engine emphasizes it, e.g. 'this is "
+    "IMPORTANT'). Use this sparingly, one word per sentence at most.\n"
     "  - Listen, understand, think, speak, and adapt naturally"
 )
 

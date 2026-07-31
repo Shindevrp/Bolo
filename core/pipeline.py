@@ -9,7 +9,7 @@ from typing import AsyncGenerator
 
 from modules.tts.chunker import TTSChunker
 from modules.tts.sanitize import sanitize_for_tts
-from modules.tts.prosody import ProsodySelector
+from modules.tts.prosody import ProsodySelector, classify_sentiment
 from providers.stt.base import STTProvider
 from providers.llm.base import LLMProvider
 from providers.tts.base import TTSProvider
@@ -73,6 +73,8 @@ class ConversationContext:
     dialogue_state: DialogueState = DialogueState.IDLE
     query_complexity: str = "standard"
     topic_shift: bool = False
+    user_sentiment: str = "neutral"
+    user_repeated: bool = False
 
 
 class StreamingPipeline:
@@ -502,6 +504,16 @@ class StreamingPipeline:
         overlap = len(prev_words & cur_words) / len(cur_words)
         return overlap < 0.2
 
+    def _detect_repetition(self, prev: str | None, cur: str) -> bool:
+        if not prev or not cur:
+            return False
+        prev_words = {w for w in prev.lower().split() if len(w) > 3}
+        cur_words = {w for w in cur.lower().split() if len(w) > 3}
+        if len(cur_words) < 3:
+            return False
+        overlap = len(prev_words & cur_words) / len(cur_words)
+        return overlap >= 0.6
+
     def _looks_like_echo(self, session_id: str, transcript: str) -> bool:
         words = [w for w in transcript.lower().split() if len(w) > 2]
         if len(words) < 3:
@@ -583,6 +595,10 @@ class StreamingPipeline:
             ctx.topic_shift = self._detect_topic_shift(
                 ctx.last_transcript, transcript
             )
+            ctx.user_repeated = self._detect_repetition(
+                ctx.last_transcript, transcript
+            )
+            ctx.user_sentiment = classify_sentiment(transcript)
             ctx.last_transcript = transcript
             ctx.is_question = transcript.strip().endswith("?")
             self._log_latency("stt")
@@ -654,6 +670,10 @@ class StreamingPipeline:
                     topic_shift=ctx.topic_shift,
                     first=first_chunk,
                     responding_to_question=ctx.is_question,
+                    complexity=ctx.query_complexity,
+                    user_sentiment=ctx.user_sentiment,
+                    user_repeated=ctx.user_repeated,
+                    first_response=ctx.turn_count == 0,
                 )
                 first_chunk = False
                 return profile
