@@ -4,7 +4,10 @@ from core.pipeline import ConversationContext, StreamingPipeline
 from modules.tts.prosody import (
     ProsodySelector,
     classify_sentiment,
+    comma_fractions,
+    comma_pause,
     pause_for,
+    splice_audio,
     split_emphasis,
 )
 from tests.test_streaming import (
@@ -150,6 +153,37 @@ class TestPauseFor:
 
     def test_no_terminator_is_short(self) -> None:
         assert pause_for("", 0.1) < pause_for(".", 0.1)
+
+
+class TestCommaPause:
+    def test_comma_pause_scaled_and_clamped(self) -> None:
+        assert comma_pause(0.1) == 0.06
+        assert comma_pause(10.0) == 0.15
+        assert comma_pause(0.01) == 0.03
+
+    def test_comma_fractions_word_based(self) -> None:
+        fractions = comma_fractions("Hello there, and welcome back.")
+        assert len(fractions) == 1
+        assert 0.0 < fractions[0] < 1.0
+
+    def test_comma_fractions_skip_numeric_and_quoted(self) -> None:
+        assert comma_fractions("A list of 1,000 and 2,500 items.") == []
+        fractions = comma_fractions('He said, "no, thanks" to me.')
+        assert len(fractions) == 1
+        assert 0.0 < fractions[0] < 0.5
+
+    def test_splice_audio_inserts_pad(self) -> None:
+        audio = bytes([1] * 2 * 16)  # 16 samples
+        pad = b"\x00\x00"
+        pieces = splice_audio(audio, [0.5], 16000, pad)
+        assert len(pieces) == 3
+        assert pieces[1] == pad
+        assert b"".join(pieces) == audio[:16] + pad + audio[16:]
+
+    def test_splice_audio_no_commas_returns_single_piece(self) -> None:
+        audio = b"\x01\x02"
+        assert splice_audio(audio, [], 16000, b"\x00\x00") == [audio]
+        assert splice_audio(audio, [0.5], 16000, b"") == [audio]
 
 
 class TestSplitEmphasis:

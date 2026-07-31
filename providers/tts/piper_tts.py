@@ -9,7 +9,14 @@ import piper
 import numpy as np
 
 from providers.tts.base import TTSProvider
-from modules.tts.prosody import ProsodyProfile, pause_for, split_emphasis
+from modules.tts.prosody import (
+    ProsodyProfile,
+    comma_fractions,
+    comma_pause,
+    pause_for,
+    splice_audio,
+    split_emphasis,
+)
 
 
 class PiperTTS(TTSProvider):
@@ -134,13 +141,20 @@ class PiperTTS(TTSProvider):
                 out.append(bytes(c.audio_int16_bytes))
         return out
 
-    def _synthesize_to_bytes(
-        self, sentence: str, syn_config: piper.SynthesisConfig
-    ) -> bytes:
-        audio = bytearray()
-        for chunk in self._synthesize_sentence_chunks(sentence, syn_config):
-            audio.extend(chunk)
-        return bytes(audio)
+    def _assemble_sentence(
+        self,
+        sentence: str,
+        syn_config: piper.SynthesisConfig,
+        comma_pad_seconds: float,
+    ) -> list[bytes]:
+        raw = self._synthesize_sentence_chunks(sentence, syn_config)
+        full = b"".join(raw)
+        if not full:
+            return []
+        pad = self._silence_pad(comma_pad_seconds)
+        return splice_audio(
+            full, comma_fractions(sentence), self.sample_rate, pad
+        )
 
     def _pause_after(self, terminator: str, prosody: ProsodyProfile | None) -> bytes:
         return self._silence_pad(
@@ -153,6 +167,7 @@ class PiperTTS(TTSProvider):
         prosody: ProsodyProfile | None = None,
     ) -> AsyncGenerator[bytes, None]:
         syn_config = self._config_for(prosody)
+        comma_pad_seconds = comma_pause(self._sentence_silence(prosody))
         buffer = ""
         async for chunk in text_chunks:
             buffer += chunk
@@ -160,10 +175,13 @@ class PiperTTS(TTSProvider):
             if not sentences:
                 continue
             for sentence, terminator in sentences[:-1]:
-                chunks = await asyncio.to_thread(
-                    self._synthesize_sentence_chunks, sentence, syn_config
+                pieces = await asyncio.to_thread(
+                    self._assemble_sentence,
+                    sentence,
+                    syn_config,
+                    comma_pad_seconds,
                 )
-                for audio_chunk in chunks:
+                for audio_chunk in pieces:
                     yield audio_chunk
                     await asyncio.sleep(0)
                 pad = self._pause_after(terminator, prosody)
@@ -172,23 +190,31 @@ class PiperTTS(TTSProvider):
             buffer = sentences[-1][0]
 
         if buffer.strip():
-            chunks = await asyncio.to_thread(
-                self._synthesize_sentence_chunks, buffer.strip(), syn_config
+            pieces = await asyncio.to_thread(
+                self._assemble_sentence,
+                buffer.strip(),
+                syn_config,
+                comma_pad_seconds,
             )
-            for audio_chunk in chunks:
+            for audio_chunk in pieces:
                 yield audio_chunk
 
     async def synthesize(
         self, text: str, prosody: ProsodyProfile | None = None
     ) -> bytes:
         syn_config = self._config_for(prosody)
+        comma_pad_seconds = comma_pause(self._sentence_silence(prosody))
         audio = bytearray()
         sentences = self._split_sentences(text)
         for i, (sentence, terminator) in enumerate(sentences):
-            chunk = await asyncio.to_thread(
-                self._synthesize_to_bytes, sentence, syn_config
+            pieces = await asyncio.to_thread(
+                self._assemble_sentence,
+                sentence,
+                syn_config,
+                comma_pad_seconds,
             )
-            audio.extend(chunk)
+            for piece in pieces:
+                audio.extend(piece)
             if i < len(sentences) - 1:
                 audio.extend(self._pause_after(terminator, prosody))
         return bytes(audio)

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 _NUMBERED_ITEM = re.compile(r"^\d+[.)]\s")
 _EMPHASIS_TOKEN = re.compile(r"\b[A-Z]{2,}\b")
 _ELLIPSIS = re.compile(r"\.\.\.|…")
+_COMMA = re.compile(r"(?<!\d),(?!\d)")
+_QUOTE_CHARS = {'"', "'", "\u201c", "\u201d", "\u2018", "\u2019"}
 
 _POSITIVE_WORDS = {
     "great", "awesome", "amazing", "good", "nice", "love", "happy", "cool",
@@ -58,6 +60,78 @@ def pause_for(terminator: str, base: float) -> float:
     if terminator == ".":
         return base
     return base * 0.4
+
+
+def comma_pause(base: float) -> float:
+    """Short intra-sentence pause for a comma, scaled by the base silence."""
+    return max(0.03, min(0.15, base * 0.6))
+
+
+def comma_fractions(sentence: str) -> list[float]:
+    """Word-based audio fractions [0..1] at which commas occur.
+
+    Skips numeric commas (1,000) and commas inside quoted spans.
+    """
+    if not sentence or "," not in sentence:
+        return []
+    in_quote: str | None = None
+    fractions: list[float] = []
+    words = sentence.split()
+    total_words = max(1, len(words))
+    comma_positions: list[int] = []
+    for i, ch in enumerate(sentence):
+        if ch in _QUOTE_CHARS:
+            if in_quote is None:
+                in_quote = ch
+            elif ch == in_quote:
+                in_quote = None
+            continue
+        if in_quote is not None:
+            continue
+        if _COMMA.match(sentence, i):
+            comma_positions.append(i)
+
+    for pos in comma_positions:
+        before = 0
+        word_start = 0
+        for w in words:
+            idx = sentence.find(w, word_start)
+            if idx < 0:
+                break
+            if idx < pos:
+                before += 1
+            else:
+                break
+            word_start = idx + len(w)
+        fractions.append(before / total_words)
+    return fractions
+
+
+def splice_audio(
+    audio: bytes,
+    fractions: list[float],
+    sample_rate: int,
+    pad: bytes,
+) -> list[bytes]:
+    """Insert `pad` silence at proportional offsets of a PCM16 mono audio buffer."""
+    if not fractions or not audio or not pad:
+        return [audio]
+    total_samples = len(audio) // 2
+    if total_samples <= 0:
+        return [audio]
+    offsets = sorted(
+        {max(0, min(total_samples, int(f * total_samples))) for f in fractions}
+    )
+    pieces: list[bytes] = []
+    start = 0
+    for off in offsets:
+        if off > start:
+            pieces.append(audio[start * 2 : off * 2])
+        pieces.append(pad)
+        start = off
+    if start * 2 < len(audio):
+        pieces.append(audio[start * 2 :])
+    return pieces
 
 
 def split_emphasis(sentence: str) -> list[tuple[str, bool]]:
