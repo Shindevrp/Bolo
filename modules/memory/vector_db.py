@@ -29,11 +29,14 @@ class VectorDB:
         self.documents.append(text)
         self.embeddings.append(emb)
 
-    def search(self, query: str, top_k: int = 3) -> list[str]:
+    def search_scored(self, query: str, top_k: int = 3) -> list[tuple[str, float]]:
         if not self.documents:
             return []
         self._lazy_load_encoder()
         query_emb = self._encoder.encode(query, normalize_embeddings=True)
         scores = [float(np.dot(query_emb, doc_emb)) for doc_emb in self.embeddings]
         top_indices = np.argsort(scores)[-top_k:][::-1]
-        return [self.documents[i] for i in top_indices]
+        return [(self.documents[i], scores[i]) for i in top_indices]
+
+    def search(self, query: str, top_k: int = 3) -> list[str]:
+        return [doc for doc, _ in self.search_scored(query, top_k)]

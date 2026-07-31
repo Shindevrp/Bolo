@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -23,6 +24,11 @@ from modules.backchannel.generator import BackchannelGenerator
 from modules.backchannel.timing import BackchannelTiming
 from modules.memory.session import SessionMemory
 from modules.memory.retrieval import RetrievalModule
+from modules.memory.facts import (
+    EXTRACTOR_SYSTEM_PROMPT,
+    Fact,
+    FactMemory,
+)
 from core.state import DialogueState
 from modules.dialogue.prompts import build_system_prompt
 from modules.metrics.latency import LatencyTracker
@@ -132,6 +138,11 @@ class StreamingPipeline:
         self._contexts: dict[str, ConversationContext] = {}
         self._memories: dict[str, SessionMemory] = {}
         self._retrievals: dict[str, RetrievalModule] = {}
+        self._facts: dict[str, FactMemory] = {}
+        self._last_fact_extract: dict[str, float] = {}
+        self._facts_llm_enabled = True
+        self._facts_llm_timeout = 8.0
+        self._facts_min_interval = 30.0
 
     def _int_event(self, session_id: str) -> asyncio.Event:
         if session_id not in self._interrupt_events:
@@ -187,10 +198,15 @@ class StreamingPipeline:
             logger.warning("audio queue full, dropping chunk")
 
     def register_session(
-        self, session_id: str, memory: SessionMemory, retrieval: RetrievalModule
+        self,
+        session_id: str,
+        memory: SessionMemory,
+        retrieval: RetrievalModule,
+        facts: FactMemory | None = None,
     ) -> None:
         self._memories[session_id] = memory
         self._retrievals[session_id] = retrieval
+        self._facts[session_id] = facts or FactMemory()
         try:
             asyncio.create_task(
                 asyncio.to_thread(retrieval.warm_up)
@@ -201,6 +217,8 @@ class StreamingPipeline:
     def unregister_session(self, session_id: str) -> None:
         self._memories.pop(session_id, None)
         self._retrievals.pop(session_id, None)
+        self._facts.pop(session_id, None)
+        self._last_fact_extract.pop(session_id, None)
         self._contexts.pop(session_id, None)
         self._interrupt_events.pop(session_id, None)
         self._current_tasks.pop(session_id, None)
@@ -564,7 +582,8 @@ class StreamingPipeline:
 
             if partial and len(partial.split()) >= 2:
                 spec_messages = await self._build_messages(
-                    partial, ctx, memory, retrieval
+                    partial, ctx, memory, retrieval,
+                    facts=self._facts.get(session_id),
                 )
 
                 async def _spec_llm():
@@ -636,11 +655,18 @@ class StreamingPipeline:
                     spec_task.cancel()
 
                 messages = await self._build_messages(
-                    transcript, ctx, memory, retrieval
+                    transcript, ctx, memory, retrieval,
+                    facts=self._facts.get(session_id),
                 )
 
             if memory:
                 memory.add("user", transcript)
+
+            facts = self._facts.get(session_id)
+            if facts is not None:
+                facts.advance_turn()
+                facts.add_all(facts.extract(transcript))
+                self._schedule_llm_facts(session_id, transcript, facts)
 
             if int_ev.is_set():
                 return
@@ -1027,12 +1053,82 @@ class StreamingPipeline:
 
         return "standard"
 
+    def _schedule_llm_facts(
+        self, session_id: str, transcript: str, facts: FactMemory
+    ) -> None:
+        """Fire-and-forget LLM fact extraction, rate-limited per session.
+
+        vLLM batches concurrent requests, so a background extraction call
+        never blocks the main turn. Guarded for LLM providers that lack a
+        non-streaming generate().
+        """
+        if not self._facts_llm_enabled or not hasattr(self.llm, "generate"):
+            return
+        if transcript.strip().endswith("?"):
+            return
+        now = time.monotonic()
+        if now - self._last_fact_extract.get(session_id, 0.0) < (
+            self._facts_min_interval
+        ):
+            return
+        self._last_fact_extract[session_id] = now
+        asyncio.create_task(
+            self._extract_facts_llm(session_id, transcript, facts)
+        )
+
+    async def _extract_facts_llm(
+        self, session_id: str, transcript: str, facts: FactMemory
+    ) -> None:
+        try:
+            raw = await asyncio.wait_for(
+                asyncio.shield(
+                    self.llm.generate(
+                        [
+                            {
+                                "role": "system",
+                                "content": EXTRACTOR_SYSTEM_PROMPT,
+                            },
+                            {"role": "user", "content": transcript},
+                        ]
+                    )
+                ),
+                timeout=self._facts_llm_timeout,
+            )
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+            for item in parsed or []:
+                key = str(item.get("key", "")).strip().lower()
+                value = str(item.get("value", "")).strip()
+                if not key or not value or len(value) > 60:
+                    continue
+                try:
+                    confidence = min(1.0, max(0.5, float(item.get("confidence", 0.8))))
+                except (TypeError, ValueError):
+                    confidence = 0.8
+                facts.add(
+                    Fact(
+                        key=key,
+                        value=value,
+                        category="personal",
+                        source_turn=facts.turn,
+                        confidence=confidence,
+                        source="llm",
+                    )
+                )
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            pass
+
     async def _build_messages(
         self,
         transcript: str,
         ctx: ConversationContext,
         memory: SessionMemory | None,
         retrieval: RetrievalModule | None,
+        facts: FactMemory | None = None,
     ) -> list[dict[str, str]]:
         has_context = False
         retrieved: list[str] = []
@@ -1056,21 +1152,29 @@ class StreamingPipeline:
         if tool_block:
             system_prompt += tool_block
 
+        if facts is not None:
+            facts_block = facts.to_block()
+            if facts_block:
+                system_prompt += "\n\n" + facts_block
+
         messages: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
         ]
 
-        if has_context and retrieved:
-            context_block = "\n".join(
-                f"- {r}" for r in retrieved[:3]
-            )
-            messages.append({
-                "role": "system",
-                "content": f"Relevant context from earlier:\n{context_block}",
-            })
-
         if memory:
             history = memory.get_history(6)
+            history_lower = {e.content.strip().lower() for e in history}
+            if has_context and retrieved:
+                hits = [
+                    r for r in retrieved
+                    if r.strip().lower() not in history_lower
+                ][:3]
+                if hits:
+                    messages.append({
+                        "role": "system",
+                        "content": "Relevant context from earlier:\n"
+                        + "\n".join(f"- {h}" for h in hits),
+                    })
             for entry in history:
                 messages.append({
                     "role": entry.role,
