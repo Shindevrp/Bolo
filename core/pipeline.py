@@ -10,6 +10,7 @@ from typing import AsyncGenerator
 from modules.tts.chunker import TTSChunker
 from modules.tts.sanitize import sanitize_for_tts
 from modules.tts.prosody import ProsodySelector, classify_sentiment
+from modules.emotion.classifier import EmotionClassifier
 from providers.stt.base import STTProvider
 from providers.llm.base import LLMProvider
 from providers.tts.base import TTSProvider
@@ -90,6 +91,7 @@ class StreamingPipeline:
         turn_backchannel: TurnBackchannel | None = None,
         backchannel_generator: BackchannelGenerator | None = None,
         backchannel_timing: BackchannelTiming | None = None,
+        emotion_classifier: EmotionClassifier | None = None,
     ) -> None:
         self.stt = stt
         self.llm = llm
@@ -103,6 +105,7 @@ class StreamingPipeline:
             timing=backchannel_timing or BackchannelTiming(),
         )
         self._prosody = ProsodySelector()
+        self._emotion = emotion_classifier or EmotionClassifier(enabled=False)
 
         self._latency = LatencyTracker()
         self._metrics = MetricsLogger()
@@ -599,6 +602,9 @@ class StreamingPipeline:
                 ctx.last_transcript, transcript
             )
             ctx.user_sentiment = classify_sentiment(transcript)
+            emotion_task = asyncio.create_task(
+                self._emotion.classify_async(transcript)
+            )
             ctx.last_transcript = transcript
             ctx.is_question = transcript.strip().endswith("?")
             self._log_latency("stt")
@@ -651,6 +657,17 @@ class StreamingPipeline:
                 await asyncio.sleep(delay)
                 if int_ev.is_set():
                     return
+
+            # Let the emotion classifier finish concurrently (0.5s cap);
+            # the lexicon fallback already set above wins on timeout/error.
+            if emotion_task:
+                try:
+                    ctx.user_sentiment = await asyncio.wait_for(
+                        asyncio.shield(emotion_task),
+                        timeout=self._emotion.timeout,
+                    )
+                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                    pass
 
             # ---- Parallel LLM → chunker → priority queue → TTS worker ----
             chunker = TTSChunker()

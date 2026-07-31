@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from contextlib import asynccontextmanager
@@ -39,6 +40,7 @@ def _build_providers():
     from modules.turn.backchannel import TurnBackchannel
     from modules.backchannel.generator import BackchannelGenerator
     from modules.backchannel.timing import BackchannelTiming
+    from modules.emotion.classifier import EmotionClassifier
 
     stt = FasterWhisperSTT(
         model_size=os.getenv("TASA_STT_MODEL", "tiny"),
@@ -72,7 +74,14 @@ def _build_providers():
         generator=backchannel_gen, timing=backchannel_timing
     )
 
-    return stt, llm, tts, vad, turn_detector, interrupt_handler, turn_timing, turn_backchannel, backchannel_gen, backchannel_timing
+    emotion = EmotionClassifier(
+        enabled=config.emotion_enabled,
+        model_name=config.emotion_model,
+        device=config.emotion_device,
+    )
+
+    return (stt, llm, tts, vad, turn_detector, interrupt_handler, turn_timing,
+            turn_backchannel, backchannel_gen, backchannel_timing, emotion)
 
 
 @asynccontextmanager
@@ -80,12 +89,15 @@ async def lifespan(app: FastAPI):
     global pipeline
 
     try:
-        stt, llm, tts, vad, td, ih, tt, tbc, bcg, bct = _build_providers()
+        (stt, llm, tts, vad, td, ih, tt, tbc, bcg, bct, emotion) = (
+            _build_providers()
+        )
         pipeline = StreamingPipeline(
             stt=stt, llm=llm, tts=tts, vad=vad,
             turn_detector=td, interrupt_handler=ih,
             turn_timing=tt, turn_backchannel=tbc,
             backchannel_generator=bcg, backchannel_timing=bct,
+            emotion_classifier=emotion,
         )
         app.state.pipeline = pipeline
         app.state.start_time = time.time()
@@ -99,6 +111,15 @@ async def lifespan(app: FastAPI):
             logger.info("LLM warmed up")
         except Exception as e:
             logger.warning(f"LLM warmup failed (non-critical): {e}")
+        # Warm up emotion classifier so first turn doesn't pay model load
+        try:
+            await asyncio.to_thread(emotion.load)
+            if emotion.loaded:
+                logger.info(
+                    f"emotion classifier warmed up ({emotion.model_name})"
+                )
+        except Exception as e:
+            logger.warning(f"emotion warmup failed (non-critical): {e}")
         logger.info("pipeline initialized")
     except Exception as e:
         logger.error(f"pipeline init failed: {e}")
