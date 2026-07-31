@@ -35,6 +35,10 @@ class BackchannelGenerator:
         candidates = BACKCHANNEL_CANDIDATES.get(category, ["uh-huh", "hmm"])
         return random.choice(candidates)
 
+    def generate_thinking(self) -> str:
+        """Return a filler phrase for when the LLM is still computing."""
+        return random.choice(BACKCHANNEL_CANDIDATES["thinking"])
+
     def _infer_context(self, transcript: str) -> str:
         if not transcript:
             return "acknowledging"
