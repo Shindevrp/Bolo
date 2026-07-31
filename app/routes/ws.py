@@ -41,12 +41,14 @@ async def audio_websocket(websocket: WebSocket):
     pipeline.register_session(session_id, memory, retrieval)
 
     async def pump_output():
+        interrupted = False
         async for msg in pipeline.output_stream():
             try:
                 if msg.session_id != session_id:
                     continue
 
                 if msg.event == PipelineEvent.SPEECH_START:
+                    interrupted = False
                     session.set_state(DialogueState.LISTENING)
                     await websocket.send_json({"type": "speech_start"})
 
@@ -61,6 +63,7 @@ async def audio_websocket(websocket: WebSocket):
                     })
 
                 elif msg.event == PipelineEvent.FINAL_TRANSCRIPT:
+                    interrupted = False
                     session.add_user_turn(str(msg.data))
                     await websocket.send_json({
                         "type": "transcript",
@@ -83,6 +86,8 @@ async def audio_websocket(websocket: WebSocket):
 
                 elif msg.event == PipelineEvent.TTS_CHUNK:
                     if isinstance(msg.data, bytes):
+                        if interrupted:
+                            continue
                         await websocket.send_bytes(msg.data)
 
                 elif msg.event == PipelineEvent.RESPONSE_DELAY:
@@ -102,6 +107,7 @@ async def audio_websocket(websocket: WebSocket):
                     })
 
                 elif msg.event == PipelineEvent.INTERRUPT:
+                    interrupted = True
                     session.set_state(DialogueState.LISTENING)
                     await websocket.send_json({"type": "interrupt"})
 

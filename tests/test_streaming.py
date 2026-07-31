@@ -1,0 +1,483 @@
+from __future__ import annotations
+
+import asyncio
+import itertools
+import struct
+import time
+
+import pytest
+
+from core.pipeline import StreamingPipeline, ConversationContext, PipelineEvent
+from core.state import DialogueState
+from modules.backchannel.generator import BackchannelGenerator, BACKCHANNEL_CANDIDATES
+
+
+class FakeSTT:
+    async def transcribe(self, audio_blob: bytes) -> str:
+        return ""
+
+
+class FakeLLM:
+    async def generate_stream(self, messages):
+        if False:
+            yield ""
+
+
+class FakeVAD:
+    sample_rate = 16000
+
+    def is_speech(self, chunk: bytes) -> bool:
+        return False
+
+    def reset(self) -> None:
+        pass
+
+
+class FakeTTS:
+    sample_rate = 16000
+
+    def __init__(self) -> None:
+        self.synthesized: list[str] = []
+
+    async def synthesize_stream(self, text_chunks):
+        buf = ""
+        async for chunk in text_chunks:
+            buf += chunk
+        self.synthesized.append(buf)
+        yield b"\x00\x01\x02\x03"
+
+    async def synthesize(self, text: str) -> bytes:
+        return b""
+
+
+def _make_pipeline() -> StreamingPipeline:
+    return StreamingPipeline(FakeSTT(), FakeLLM(), FakeTTS(), FakeVAD())
+
+
+class TestBackchannelGenerator:
+    def test_generate_thinking(self) -> None:
+        g = BackchannelGenerator()
+        assert g.generate_thinking() in BACKCHANNEL_CANDIDATES["thinking"]
+
+
+class TestTTSWorkerPriority:
+    def test_backchannel_priority_before_response(self) -> None:
+        async def run() -> list[str]:
+            p = _make_pipeline()
+            q: asyncio.PriorityQueue = asyncio.PriorityQueue()
+            seq = itertools.count()
+            q.put_nowait((1, next(seq), "Second sentence."))
+            q.put_nowait((0, next(seq), "hmm"))
+            q.put_nowait((2, next(seq), None))
+            await p._tts_worker(q, "sess", asyncio.Event())
+            return p.tts.synthesized
+
+        synthesized = asyncio.run(run())
+        assert synthesized == ["hmm", "Second sentence."]
+
+    def test_interrupt_drains_without_synthesizing(self) -> None:
+        async def run() -> list[str]:
+            p = _make_pipeline()
+            q: asyncio.PriorityQueue = asyncio.PriorityQueue()
+            seq = itertools.count()
+            q.put_nowait((1, next(seq), "Should be dropped."))
+            q.put_nowait((2, next(seq), None))
+            int_ev = p._int_event("sess")
+            int_ev.set()
+            await p._tts_worker(q, "sess", int_ev)
+            return p.tts.synthesized
+
+        synthesized = asyncio.run(run())
+        assert synthesized == []
+
+    def test_stop_tts_stops_worker(self) -> None:
+        async def run() -> list[str]:
+            p = _make_pipeline()
+            q: asyncio.PriorityQueue = asyncio.PriorityQueue()
+            seq = itertools.count()
+            q.put_nowait((1, next(seq), "Drop me."))
+            stop = asyncio.Event()
+            stop.set()
+            await p._tts_worker(q, "sess", stop)
+            return p.tts.synthesized
+
+        synthesized = asyncio.run(run())
+        assert synthesized == []
+
+
+class FakeSTTText:
+    async def transcribe(self, audio_blob: bytes) -> str:
+        return "hello world"
+
+
+class FakeLLMText:
+    async def generate_stream(self, messages):
+        for token in ["Hello ", "there, ", "this ", "is ", "a test."]:
+            yield token
+
+
+class FakeTTSStream:
+    sample_rate = 16000
+
+    def __init__(self) -> None:
+        self.synthesized: list[str] = []
+
+    async def synthesize_stream(self, text_chunks):
+        buf = ""
+        async for chunk in text_chunks:
+            buf += chunk
+        if buf:
+            self.synthesized.append(buf)
+            yield b"\x00\x00"
+
+    async def synthesize(self, text: str) -> bytes:
+        return b""
+
+
+class HangSTT:
+    async def transcribe(self, audio_blob: bytes) -> str:
+        await asyncio.Event().wait()
+        return ""
+
+
+class TrackLLM:
+    def __init__(self) -> None:
+        self.started = 0
+        self.cancelled = 0
+
+    async def generate_stream(self, messages):
+        self.started += 1
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
+        if False:
+            yield ""
+
+
+class TestSegmentCleanup:
+    def test_cancel_cleans_up_speculative_llm(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.stt = HangSTT()
+            p.llm = TrackLLM()
+            ctx = ConversationContext()
+            ctx.last_partial_transcript = "hello world"
+
+            task = asyncio.create_task(
+                p._process_speech_segment(b"\x00" * 1600, "sess", ctx)
+            )
+            await asyncio.sleep(0.05)
+            assert p.llm.started == 1
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.sleep(0.05)
+            assert p.llm.cancelled == 1
+            assert "sess" not in p._current_tasks
+
+        asyncio.run(run())
+
+    def test_spec_reuse_emits_llm_token(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.stt = FakeSTTText()
+            p.llm = FakeLLMText()
+            p.tts = FakeTTSStream()
+            ctx = ConversationContext()
+            ctx.last_partial_transcript = "hello world"
+
+            await p._process_speech_segment(b"\x00" * 1600, "sess", ctx)
+
+            msgs: list[tuple[PipelineEvent, object]] = []
+            while not p._output_queue.empty():
+                msg = p._output_queue.get_nowait()
+                msgs.append((msg.event, msg.data))
+            tokens = [
+                d for ev, d in msgs if ev == PipelineEvent.LLM_TOKEN
+            ]
+            assert tokens, "expected an LLM_TOKEN from the speculated response"
+            assert tokens[0] == "Hello there, this is a test."
+
+        asyncio.run(run())
+
+
+class TestMultiSessionIsolation:
+    def test_signal_interrupt_cancels_only_target_session(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            cancelled: dict[str, bool] = {"A": False, "B": False}
+            block_a, block_b = asyncio.Event(), asyncio.Event()
+
+            async def blocker(name: str, block: asyncio.Event) -> None:
+                try:
+                    await block.wait()
+                except asyncio.CancelledError:
+                    cancelled[name] = True
+                    raise
+
+            task_a = asyncio.create_task(blocker("A", block_a))
+            task_b = asyncio.create_task(blocker("B", block_b))
+            p._current_tasks["A"] = task_a
+            p._current_tasks["B"] = task_b
+
+            await asyncio.sleep(0.01)
+            await p.signal_interrupt("A")
+            await asyncio.sleep(0.05)
+
+            assert cancelled["A"] is True
+            assert cancelled["B"] is False
+            assert not task_b.done()
+
+            task_b.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task_b
+
+        asyncio.run(run())
+
+    def test_signal_interrupt_unknown_session_does_not_crash(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            await p.signal_interrupt("unknown_session")
+            assert "unknown_session" not in p._current_tasks
+
+        asyncio.run(run())
+
+    def test_process_segment_streams_and_clears_task_map(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.stt = FakeSTTText()
+            p.llm = FakeLLMText()
+            p.tts = FakeTTSStream()
+            ctx = ConversationContext()
+
+            await p._process_speech_segment(b"\x00" * 1600, "sess", ctx)
+
+            assert "sess" not in p._current_tasks
+            assert p.tts.synthesized, "expected synthesized audio chunks"
+
+        asyncio.run(run())
+
+    def test_new_segment_replaces_previous_task_entry(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.stt = FakeSTTText()
+            p.llm = FakeLLMText()
+            p.tts = FakeTTSStream()
+
+            await p._process_speech_segment(b"\x00" * 1600, "sess", ConversationContext())
+            await p._process_speech_segment(b"\x00" * 1600, "sess", ConversationContext())
+
+            assert "sess" not in p._current_tasks
+            assert len(p.tts.synthesized) == 2
+
+        asyncio.run(run())
+
+
+class FakeVADTrue:
+    sample_rate = 16000
+
+    def is_speech(self, chunk: bytes) -> bool:
+        return True
+
+    def reset(self) -> None:
+        pass
+
+
+async def _push_speech(p: StreamingPipeline, n: int) -> None:
+    for _ in range(n):
+        await p.push_audio(b"\x7f" * 640, "sess")
+
+
+def _const_energy_chunk(value: int) -> bytes:
+    return struct.pack("<h", value) * (640 // 2)
+
+
+class TestPlaybackActive:
+    def test_tts_worker_marks_playback_active_then_clears(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            q: asyncio.PriorityQueue = asyncio.PriorityQueue()
+            seq = itertools.count()
+            q.put_nowait((1, next(seq), "Say something."))
+            q.put_nowait((2, next(seq), None))
+            await p._tts_worker(q, "sess", asyncio.Event())
+            assert p._playback_active.get("sess") is True
+            await asyncio.sleep(0.7)
+            assert p._playback_active.get("sess") is False
+
+        asyncio.run(run())
+
+    def test_onset_barges_in_when_client_still_playing(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.vad = FakeVADTrue()
+            p._playback_active["sess"] = True
+            p._ctx("sess").dialogue_state = DialogueState.IDLE
+
+            p._running = True
+            loop_task = asyncio.create_task(p._pipeline_loop())
+            seen: list[tuple[PipelineEvent, str]] = []
+
+            async def collect() -> None:
+                async for msg in p.output_stream():
+                    seen.append((msg.event, msg.session_id))
+
+            col_task = asyncio.create_task(collect())
+            await _push_speech(p, 4)
+            await asyncio.sleep(0.2)
+            p._running = False
+            loop_task.cancel()
+            await asyncio.gather(loop_task, col_task, return_exceptions=True)
+
+            assert (PipelineEvent.INTERRUPT, "sess") in seen
+            assert p._playback_active.get("sess") is False
+
+        asyncio.run(run())
+
+    def test_no_interrupt_when_idle_and_not_playing(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.vad = FakeVADTrue()
+            p._ctx("sess").dialogue_state = DialogueState.IDLE
+
+            p._running = True
+            loop_task = asyncio.create_task(p._pipeline_loop())
+            seen: list[tuple[PipelineEvent, str]] = []
+
+            async def collect() -> None:
+                async for msg in p.output_stream():
+                    seen.append((msg.event, msg.session_id))
+
+            col_task = asyncio.create_task(collect())
+            await _push_speech(p, 4)
+            await asyncio.sleep(0.2)
+            p._running = False
+            loop_task.cancel()
+            await asyncio.gather(loop_task, col_task, return_exceptions=True)
+
+            assert (PipelineEvent.INTERRUPT, "sess") not in seen
+
+        asyncio.run(run())
+
+    def test_worker_cancel_still_schedules_playback_clear(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            q: asyncio.PriorityQueue = asyncio.PriorityQueue()
+            seq = itertools.count()
+            q.put_nowait((1, next(seq), "Played already."))
+            worker = asyncio.create_task(p._tts_worker(q, "sess", asyncio.Event()))
+            await asyncio.sleep(0.3)
+            worker.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await worker
+            assert p._playback_active.get("sess") is True
+            assert "sess" in p._playback_clear_tasks
+            await asyncio.sleep(0.7)
+            assert p._playback_active.get("sess") is False
+
+        asyncio.run(run())
+
+    def test_interrupt_clears_playback_flag_and_schedule(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p._playback_active["sess"] = True
+            clear = asyncio.create_task(asyncio.sleep(10))
+            p._playback_clear_tasks["sess"] = clear
+            await p.signal_interrupt("sess")
+            await asyncio.sleep(0)
+            assert p._playback_active.get("sess") is False
+            assert "sess" not in p._playback_clear_tasks
+            assert clear.cancelled()
+
+        asyncio.run(run())
+
+    def test_echo_within_grace_does_not_barge_in(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.vad = FakeVADTrue()
+            p._playback_active["sess"] = True
+            p._playback_onset["sess"] = time.monotonic()
+            p._echo_floor["sess"] = 0.15
+            p._ctx("sess").dialogue_state = DialogueState.IDLE
+
+            p._running = True
+            loop_task = asyncio.create_task(p._pipeline_loop())
+            seen: list[tuple[PipelineEvent, str]] = []
+
+            async def collect() -> None:
+                async for msg in p.output_stream():
+                    seen.append((msg.event, msg.session_id))
+
+            col_task = asyncio.create_task(collect())
+            await _push_speech(p, 4)
+            await asyncio.sleep(0.2)
+            p._running = False
+            loop_task.cancel()
+            await asyncio.gather(loop_task, col_task, return_exceptions=True)
+
+            assert (PipelineEvent.INTERRUPT, "sess") not in seen
+            assert p._playback_active.get("sess") is True
+
+        asyncio.run(run())
+
+    def test_echo_floor_suppresses_own_voice_after_grace(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.vad = FakeVADTrue()
+            p._playback_active["sess"] = True
+            p._playback_onset["sess"] = time.monotonic() - 5.0
+            p._echo_floor["sess"] = 0.15
+            p._ctx("sess").dialogue_state = DialogueState.IDLE
+
+            p._running = True
+            loop_task = asyncio.create_task(p._pipeline_loop())
+            seen: list[tuple[PipelineEvent, str]] = []
+
+            async def collect() -> None:
+                async for msg in p.output_stream():
+                    seen.append((msg.event, msg.session_id))
+
+            col_task = asyncio.create_task(collect())
+            for _ in range(4):
+                await p.push_audio(_const_energy_chunk(4000), "sess")
+            await asyncio.sleep(0.2)
+            p._running = False
+            loop_task.cancel()
+            await asyncio.gather(loop_task, col_task, return_exceptions=True)
+
+            assert (PipelineEvent.INTERRUPT, "sess") not in seen
+
+        asyncio.run(run())
+
+    def test_louder_than_echo_barges_in_after_grace(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.vad = FakeVADTrue()
+            p._playback_active["sess"] = True
+            p._playback_onset["sess"] = time.monotonic() - 5.0
+            p._echo_floor["sess"] = 0.15
+            p._ctx("sess").dialogue_state = DialogueState.IDLE
+
+            p._running = True
+            loop_task = asyncio.create_task(p._pipeline_loop())
+            seen: list[tuple[PipelineEvent, str]] = []
+
+            async def collect() -> None:
+                async for msg in p.output_stream():
+                    seen.append((msg.event, msg.session_id))
+
+            col_task = asyncio.create_task(collect())
+            for _ in range(3):
+                await p.push_audio(_const_energy_chunk(4000), "sess")
+            for _ in range(4):
+                await p.push_audio(_const_energy_chunk(32639), "sess")
+            await asyncio.sleep(0.2)
+            p._running = False
+            loop_task.cancel()
+            await asyncio.gather(loop_task, col_task, return_exceptions=True)
+
+            assert (PipelineEvent.INTERRUPT, "sess") in seen
+
+        asyncio.run(run())

@@ -44,6 +44,13 @@ class TTSTrack(MediaStreamTrack):
         except asyncio.QueueFull:
             pass
 
+    def flush(self) -> None:
+        while True:
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+
     async def recv(self) -> AudioFrame:
         try:
             return await asyncio.wait_for(self._queue.get(), timeout=0.3)
@@ -96,12 +103,14 @@ async def webrtc_signal(websocket: WebSocket):
     pipeline.register_session(session_id, memory, retrieval)
 
     async def pump_output():
+        interrupted = False
         async for msg in pipeline.output_stream():
             try:
                 if msg.session_id != session_id:
                     continue
 
                 if msg.event == PipelineEvent.SPEECH_START:
+                    interrupted = False
                     session.set_state(DialogueState.LISTENING)
                     await websocket.send_json({"type": "speech_start"})
 
@@ -116,6 +125,7 @@ async def webrtc_signal(websocket: WebSocket):
                     })
 
                 elif msg.event == PipelineEvent.FINAL_TRANSCRIPT:
+                    interrupted = False
                     session.add_user_turn(str(msg.data))
                     await websocket.send_json({
                         "type": "transcript",
@@ -138,6 +148,8 @@ async def webrtc_signal(websocket: WebSocket):
 
                 elif msg.event == PipelineEvent.TTS_CHUNK:
                     if isinstance(msg.data, bytes):
+                        if interrupted:
+                            continue
                         pcm = _strip_wav_header(msg.data)
                         sr, _ = _extract_wav_info(msg.data)
                         if sr == 0:
@@ -161,6 +173,8 @@ async def webrtc_signal(websocket: WebSocket):
                     })
 
                 elif msg.event == PipelineEvent.INTERRUPT:
+                    interrupted = True
+                    tts_track.flush()
                     session.set_state(DialogueState.LISTENING)
                     await websocket.send_json({"type": "interrupt"})
 
@@ -221,6 +235,7 @@ async def webrtc_signal(websocket: WebSocket):
                         await websocket.send_json({"type": "pong"})
 
                     elif msg_type == "interrupt":
+                        tts_track.flush()
                         await pipeline.signal_interrupt(session_id)
 
                     elif msg_type == "offer":

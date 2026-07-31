@@ -132,7 +132,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
         dbg('ICE: '+pc.iceConnectionState);
       };
 
-      navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:true}})
+      navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}})
       .then(function(stream){
         localStream=stream;
         stream.getTracks().forEach(function(track){pc.addTrack(track,stream);});
@@ -159,7 +159,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
         }else if(m.type==='speech_start'){sts('on','Listening...');dbg('Speaking detected');}
         else if(m.type==='speech_end'){sts('busy','Processing...');dbg('Processing speech');}
         else if(m.type==='partial_transcript'){dbg('Heard: '+m.text.slice(0,60));}
-        else if(m.type==='transcript'){addMsg('user',m.text);dbg('You: '+m.text.slice(0,40));}
+        else if(m.type==='transcript'){if(audioEl){audioEl.volume=1;}addMsg('user',m.text);dbg('You: '+m.text.slice(0,40));}
         else if(m.type==='llm_token'){
           if(!c.querySelector('.msg.assistant')){sts('talk','Speaking...');dbg('TASA responding...');}
           addMsg('assistant',m.token,true);
