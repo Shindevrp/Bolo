@@ -64,7 +64,7 @@ def pause_for(terminator: str, base: float) -> float:
 
 def comma_pause(base: float) -> float:
     """Short intra-sentence pause for a comma, scaled by the base silence."""
-    return max(0.03, min(0.15, base * 0.6))
+    return max(0.05, min(0.25, base))
 
 
 def comma_fractions(sentence: str) -> list[float]:
@@ -263,21 +263,21 @@ class ProsodySelector:
                 length_scale=0.8,
                 noise_scale=0.5,
                 noise_w=0.6,
-                sentence_silence=0.06,
+                sentence_silence=0.08,
                 label="eager",
             )
         if trajectory == "falling" or engagement <= 0.35:
             return ProsodyProfile(
-                length_scale=1.12,
+                length_scale=1.05,
                 noise_scale=0.32,
                 noise_w=0.5,
-                sentence_silence=0.16,
+                sentence_silence=0.18,
                 label="calm",
             )
         return ProsodyProfile(
             length_scale=0.95,
             noise_scale=0.4,
             noise_w=0.5,
-            sentence_silence=0.1,
+            sentence_silence=0.12,
             label="conversational",
         )

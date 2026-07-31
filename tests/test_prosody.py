@@ -157,9 +157,9 @@ class TestPauseFor:
 
 class TestCommaPause:
     def test_comma_pause_scaled_and_clamped(self) -> None:
-        assert comma_pause(0.1) == 0.06
-        assert comma_pause(10.0) == 0.15
-        assert comma_pause(0.01) == 0.03
+        assert comma_pause(0.12) == 0.12
+        assert comma_pause(10.0) == 0.25
+        assert comma_pause(0.01) == 0.05
 
     def test_comma_fractions_word_based(self) -> None:
         fractions = comma_fractions("Hello there, and welcome back.")
