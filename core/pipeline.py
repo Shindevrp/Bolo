@@ -605,6 +605,9 @@ class StreamingPipeline:
             emotion_task = asyncio.create_task(
                 self._emotion.classify_async(transcript)
             )
+            # If we time out below and shield-cancel, swallow any late
+            # exception so it never surfaces as "exception never retrieved".
+            emotion_task.add_done_callback(lambda t: t.exception())
             ctx.last_transcript = transcript
             ctx.is_question = transcript.strip().endswith("?")
             self._log_latency("stt")
