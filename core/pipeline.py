@@ -115,6 +115,7 @@ class StreamingPipeline:
         self._playback_onset: dict[str, float] = {}
         self._echo_floor: dict[str, float] = {}
         self._speaking: dict[str, bool] = {}
+        self._last_spoken: dict[str, str] = {}
         self._speech_buffers: dict[str, bytearray] = {}
         self._silence_ms: dict[str, float] = {}
         self._last_partial_time: dict[str, float] = {}
@@ -501,6 +502,19 @@ class StreamingPipeline:
         overlap = len(prev_words & cur_words) / len(cur_words)
         return overlap < 0.2
 
+    def _looks_like_echo(self, session_id: str, transcript: str) -> bool:
+        words = [w for w in transcript.lower().split() if len(w) > 2]
+        if len(words) < 3:
+            return False
+        last_words = {
+            w for w in self._last_spoken.get(session_id, "").lower().split()
+            if len(w) > 2
+        }
+        if not last_words:
+            return False
+        overlap = len(set(words) & last_words) / len(words)
+        return overlap >= 0.6
+
     async def _process_speech_segment(
         self, audio_blob: bytes, session_id: str, ctx: ConversationContext
     ) -> None:
@@ -553,6 +567,15 @@ class StreamingPipeline:
             self._latency.measure("stt", stt_start)
 
             if not transcript:
+                if spec_task:
+                    spec_task.cancel()
+                return
+
+            if self._looks_like_echo(session_id, transcript):
+                logger.debug(
+                    f"dropped echo-looking transcript session={session_id}"
+                    f" transcript={transcript!r}"
+                )
                 if spec_task:
                     spec_task.cancel()
                 return
@@ -849,6 +872,7 @@ class StreamingPipeline:
         sr = self.tts.sample_rate
         total_bytes = 0
         first_emit: float | None = None
+        spoken: list[str] = []
 
         async def _one(text: str) -> AsyncGenerator[str, None]:
             yield text
@@ -870,6 +894,7 @@ class StreamingPipeline:
                 if int_ev.is_set() or stop_tts.is_set():
                     await self._drain_queue(text_queue)
                     break
+                spoken.append(text)
 
                 try:
                     async for audio_chunk in self.tts.synthesize_stream(
@@ -906,6 +931,8 @@ class StreamingPipeline:
                     session_id,
                     first_emit + total_bytes / (sr * 2) - time.monotonic(),
                 )
+            if not int_ev.is_set() and spoken:
+                self._last_spoken[session_id] = " ".join(spoken)
 
     def _schedule_playback_clear(self, session_id: str, delay: float) -> None:
         """Mark the client playback window as over after the audio finishes."""

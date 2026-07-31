@@ -15,6 +15,11 @@ class _FakeSTTQuestion:
         return "what time is it?"
 
 
+class _FakeSTTEcho:
+    async def transcribe(self, audio_blob: bytes) -> str:
+        return "hello world and welcome back"
+
+
 def _make_pipeline() -> StreamingPipeline:
     return StreamingPipeline(FakeSTTText(), FakeLLMText(), FakeTTSStream(), FakeVAD())
 
@@ -93,5 +98,47 @@ class TestProsodyPipelineIntegration:
             )
             assert p.tts.synthesized
             assert "answer" in p.tts.prosody_labels
+
+        asyncio.run(run())
+
+
+class TestEchoGating:
+    def test_looks_like_echo_positive(self) -> None:
+        p = _make_pipeline()
+        p._last_spoken["sess"] = (
+            "let me explain the Hadamard matrix and its uses"
+        )
+        assert p._looks_like_echo(
+            "sess", "explain the Hadamard matrix"
+        )
+
+    def test_looks_like_echo_negative_on_distinct_topic(self) -> None:
+        p = _make_pipeline()
+        p._last_spoken["sess"] = (
+            "the weather is sunny and warm today"
+        )
+        assert not p._looks_like_echo("sess", "what is the capital of France")
+
+    def test_segment_dropped_when_transcript_matches_last_spoken(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p._last_spoken["sess"] = "hello world and welcome back everyone"
+            p.stt = _FakeSTTEcho()
+
+            await p._process_speech_segment(
+                b"\x00" * 1600, "sess", ConversationContext()
+            )
+            assert p.tts.synthesized == []
+
+        asyncio.run(run())
+
+    def test_segment_kept_when_transcript_is_new(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p._last_spoken["sess"] = "the weather is sunny and warm"
+            await p._process_speech_segment(
+                b"\x00" * 1600, "sess", ConversationContext()
+            )
+            assert p.tts.synthesized
 
         asyncio.run(run())
