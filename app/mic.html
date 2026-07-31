@@ -43,7 +43,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:transparent;displ
 (function(){
   var b=document.getElementById('vcb'),d=document.getElementById('vcd'),l=document.getElementById('vcl'),c=document.getElementById('vcc'),db=document.getElementById('vdbg');
   var ws=null,st=null,ac=null,pr=null,sc=null,act=false,reconn=null,retryDelay=1000,maxRetryDelay=30000,
-      audioQ=[],audioPlaying=false,gainNode=null;
+      audioQ=[],audioPlaying=false,gainNode=null,currentSrc=null,playToken=0;
   function dbg(t){db.textContent=t;}
   function sts(cl,t){d.className='vc-dot'+(cl?' '+cl:'');l.textContent=t;}
   function lg(tp,tx){
@@ -90,6 +90,8 @@ body{font-family:system-ui,-apple-system,sans-serif;background:transparent;displ
       };
       ws.onmessage=function(e){
         function duckAudio(){
+          playToken++;
+          if(currentSrc){try{currentSrc.stop();}catch(e){} currentSrc=null;}
           if(gainNode){
             try{gainNode.gain.linearRampToValueAtTime(0,ac.currentTime+0.05);}catch(e){}
           }
@@ -97,8 +99,9 @@ body{font-family:system-ui,-apple-system,sans-serif;background:transparent;displ
         }
         function setupGain(){
           if(!gainNode&&ac){
-            try{gainNode=ac.createGain();gainNode.gain.value=1;gainNode.connect(ac.destination);}catch(e){gainNode=null;}
+            try{gainNode=ac.createGain();gainNode.connect(ac.destination);}catch(e){gainNode=null;}
           }
+          if(gainNode){try{gainNode.gain.value=1;}catch(e){}}
         }
         function playAudio(buf){
           audioQ.push(buf);
@@ -108,15 +111,18 @@ body{font-family:system-ui,-apple-system,sans-serif;background:transparent;displ
           if(audioQ.length===0){audioPlaying=false;return;}
           audioPlaying=true;
           var buf=audioQ.shift();
+          var tok=playToken;
           if(!ac) return processAudioQ();
           setupGain();
           try{
             ac.decodeAudioData(buf,function(audio){
+              if(tok!==playToken){processAudioQ();return;}
               var src=ac.createBufferSource();
               src.buffer=audio;
+              currentSrc=src;
               if(gainNode) src.connect(gainNode);
               else src.connect(ac.destination);
-              src.onended=function(){processAudioQ();};
+              src.onended=function(){if(currentSrc===src)currentSrc=null;processAudioQ();};
               src.start();
             },function(){processAudioQ();});
           }catch(x){processAudioQ();}

@@ -125,6 +125,7 @@ async def webrtc_signal(websocket: WebSocket):
                     })
 
                 elif msg.event == PipelineEvent.FINAL_TRANSCRIPT:
+                    interrupted = False
                     session.add_user_turn(str(msg.data))
                     await websocket.send_json({
                         "type": "transcript",

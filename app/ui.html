@@ -158,7 +158,10 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
         act=true;retryDelay=1000;b.classList.add('rec');b.textContent='🔴';sts('on','Listening...');
         c.innerHTML='<div class="empty-state">Speak or type below...</div>';
       };
+      var currentSrc=null,playToken=0;
       function duckAudio(){
+        playToken++;
+        if(currentSrc){try{currentSrc.stop();}catch(e){} currentSrc=null;}
         if(gainNode){
           try{
             gainNode.gain.linearRampToValueAtTime(0, ac.currentTime+0.05);
@@ -170,10 +173,10 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
         if(!gainNode&&ac){
           try{
             gainNode=ac.createGain();
-            gainNode.gain.value=1;
             gainNode.connect(ac.destination);
           }catch(e){gainNode=null;}
         }
+        if(gainNode){try{gainNode.gain.value=1;}catch(e){}}
       }
       function playAudio(buf){
         audioQ.push(buf);
@@ -183,15 +186,18 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
         if(audioQ.length===0){audioPlaying=false;return;}
         audioPlaying=true;
         var buf=audioQ.shift();
+        var tok=playToken;
         if(!ac) return processAudioQ();
         setupGain();
         try{
           ac.decodeAudioData(buf,function(audio){
+            if(tok!==playToken){processAudioQ();return;}
             var src=ac.createBufferSource();
             src.buffer=audio;
+            currentSrc=src;
             if(gainNode) src.connect(gainNode);
             else src.connect(ac.destination);
-            src.onended=function(){processAudioQ();};
+            src.onended=function(){if(currentSrc===src)currentSrc=null;processAudioQ();};
             src.start();
           },function(){processAudioQ();});
         }catch(x){processAudioQ();}
