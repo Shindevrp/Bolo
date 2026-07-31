@@ -9,6 +9,7 @@ from typing import AsyncGenerator
 
 from modules.tts.chunker import TTSChunker
 from modules.tts.sanitize import sanitize_for_tts
+from modules.tts.prosody import ProsodySelector
 from providers.stt.base import STTProvider
 from providers.llm.base import LLMProvider
 from providers.tts.base import TTSProvider
@@ -71,6 +72,7 @@ class ConversationContext:
     prosody_trajectory: str = "neutral"
     dialogue_state: DialogueState = DialogueState.IDLE
     query_complexity: str = "standard"
+    topic_shift: bool = False
 
 
 class StreamingPipeline:
@@ -98,6 +100,7 @@ class StreamingPipeline:
             generator=backchannel_generator or BackchannelGenerator(),
             timing=backchannel_timing or BackchannelTiming(),
         )
+        self._prosody = ProsodySelector()
 
         self._latency = LatencyTracker()
         self._metrics = MetricsLogger()
@@ -488,9 +491,27 @@ class StreamingPipeline:
                             self._process_speech_segment(audio_blob, sid, ctx)
                         )
 
+    def _detect_topic_shift(self, prev: str | None, cur: str) -> bool:
+        if not prev or not cur:
+            return False
+        prev_words = {w for w in prev.lower().split() if len(w) > 3}
+        cur_words = {w for w in cur.lower().split() if len(w) > 3}
+        if not cur_words:
+            return False
+        overlap = len(prev_words & cur_words) / len(cur_words)
+        return overlap < 0.2
+
     async def _process_speech_segment(
         self, audio_blob: bytes, session_id: str, ctx: ConversationContext
     ) -> None:
+        prev = self._current_tasks.get(session_id)
+        if prev and not prev.done() and prev is not asyncio.current_task():
+            prev.cancel()
+            self._playback_active[session_id] = False
+            clear_task = self._playback_clear_tasks.pop(session_id, None)
+            if clear_task and not clear_task.done():
+                clear_task.cancel()
+            await self._emit(PipelineEvent.INTERRUPT, session_id=session_id)
         int_ev = self._int_event(session_id)
         int_ev.clear()
         self._current_tasks[session_id] = asyncio.current_task()
@@ -536,6 +557,9 @@ class StreamingPipeline:
                     spec_task.cancel()
                 return
 
+            ctx.topic_shift = self._detect_topic_shift(
+                ctx.last_transcript, transcript
+            )
             ctx.last_transcript = transcript
             ctx.is_question = transcript.strip().endswith("?")
             self._log_latency("stt")
@@ -595,18 +619,37 @@ class StreamingPipeline:
             seq = itertools.count()
             stop_tts = asyncio.Event()
             tool_calls: list[dict[str, str]] = []
+            first_chunk = True
+
+            def _prosody_for(text: str):
+                nonlocal first_chunk
+                profile = self._prosody.select(
+                    text,
+                    trajectory=ctx.prosody_trajectory,
+                    engagement=ctx.engagement,
+                    turn_count=ctx.turn_count,
+                    topic_shift=ctx.topic_shift,
+                    first=first_chunk,
+                    responding_to_question=ctx.is_question,
+                )
+                first_chunk = False
+                return profile
 
             async def push(priority: int, text: str) -> None:
                 text = sanitize_for_tts(text)
                 if not text.strip():
                     return
-                await text_queue.put((priority, next(seq), text))
+                await text_queue.put(
+                    (priority, next(seq), text, _prosody_for(text))
+                )
 
             def push_nowait(priority: int, text: str) -> None:
                 text = sanitize_for_tts(text)
                 if not text.strip():
                     return
-                text_queue.put_nowait((priority, next(seq), text))
+                text_queue.put_nowait(
+                    (priority, next(seq), text, _prosody_for(text))
+                )
 
             tts_worker = asyncio.create_task(
                 self._tts_worker(text_queue, session_id, stop_tts)
@@ -735,7 +778,7 @@ class StreamingPipeline:
             await self._emit(PipelineEvent.LLM_DONE, full, session_id)
 
             # End-of-stream sentinel (lowest priority: drained last)
-            text_queue.put_nowait((2, next(seq), None))
+            text_queue.put_nowait((2, next(seq), None, None))
 
             if tts_worker:
                 await tts_worker
@@ -792,7 +835,7 @@ class StreamingPipeline:
             return
         text = self.turn_backchannel.generator.generate_thinking()
         if text:
-            text_queue.put_nowait((0, next(seq), text))
+            text_queue.put_nowait((0, next(seq), text, None))
             logger.debug(f"thinking backchannel session={session_id} text={text}")
 
     async def _tts_worker(
@@ -813,7 +856,7 @@ class StreamingPipeline:
         try:
             while True:
                 try:
-                    _, _, text = await asyncio.wait_for(
+                    _, _, text, prosody = await asyncio.wait_for(
                         text_queue.get(), timeout=0.2
                     )
                 except asyncio.TimeoutError:
@@ -829,7 +872,9 @@ class StreamingPipeline:
                     break
 
                 try:
-                    async for audio_chunk in self.tts.synthesize_stream(_one(text)):
+                    async for audio_chunk in self.tts.synthesize_stream(
+                        _one(text), prosody=prosody
+                    ):
                         if int_ev.is_set() or stop_tts.is_set():
                             break
                         if isinstance(audio_chunk, bytes) and len(audio_chunk) > 0:

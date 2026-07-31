@@ -39,15 +39,17 @@ class FakeTTS:
 
     def __init__(self) -> None:
         self.synthesized: list[str] = []
+        self.prosody_labels: list[str | None] = []
 
-    async def synthesize_stream(self, text_chunks):
+    async def synthesize_stream(self, text_chunks, prosody=None):
         buf = ""
         async for chunk in text_chunks:
             buf += chunk
         self.synthesized.append(buf)
+        self.prosody_labels.append(prosody.label if prosody else None)
         yield b"\x00\x01\x02\x03"
 
-    async def synthesize(self, text: str) -> bytes:
+    async def synthesize(self, text: str, prosody=None) -> bytes:
         return b""
 
 
@@ -67,9 +69,9 @@ class TestTTSWorkerPriority:
             p = _make_pipeline()
             q: asyncio.PriorityQueue = asyncio.PriorityQueue()
             seq = itertools.count()
-            q.put_nowait((1, next(seq), "Second sentence."))
-            q.put_nowait((0, next(seq), "hmm"))
-            q.put_nowait((2, next(seq), None))
+            q.put_nowait((1, next(seq), "Second sentence.", None))
+            q.put_nowait((0, next(seq), "hmm", None))
+            q.put_nowait((2, next(seq), None, None))
             await p._tts_worker(q, "sess", asyncio.Event())
             return p.tts.synthesized
 
@@ -81,8 +83,8 @@ class TestTTSWorkerPriority:
             p = _make_pipeline()
             q: asyncio.PriorityQueue = asyncio.PriorityQueue()
             seq = itertools.count()
-            q.put_nowait((1, next(seq), "Should be dropped."))
-            q.put_nowait((2, next(seq), None))
+            q.put_nowait((1, next(seq), "Should be dropped.", None))
+            q.put_nowait((2, next(seq), None, None))
             int_ev = p._int_event("sess")
             int_ev.set()
             await p._tts_worker(q, "sess", int_ev)
@@ -96,7 +98,7 @@ class TestTTSWorkerPriority:
             p = _make_pipeline()
             q: asyncio.PriorityQueue = asyncio.PriorityQueue()
             seq = itertools.count()
-            q.put_nowait((1, next(seq), "Drop me."))
+            q.put_nowait((1, next(seq), "Drop me.", None))
             stop = asyncio.Event()
             stop.set()
             await p._tts_worker(q, "sess", stop)
@@ -122,16 +124,18 @@ class FakeTTSStream:
 
     def __init__(self) -> None:
         self.synthesized: list[str] = []
+        self.prosody_labels: list[str | None] = []
 
-    async def synthesize_stream(self, text_chunks):
+    async def synthesize_stream(self, text_chunks, prosody=None):
         buf = ""
         async for chunk in text_chunks:
             buf += chunk
         if buf:
             self.synthesized.append(buf)
+            self.prosody_labels.append(prosody.label if prosody else None)
             yield b"\x00\x00"
 
-    async def synthesize(self, text: str) -> bytes:
+    async def synthesize(self, text: str, prosody=None) -> bytes:
         return b""
 
 
@@ -301,8 +305,8 @@ class TestPlaybackActive:
             p = _make_pipeline()
             q: asyncio.PriorityQueue = asyncio.PriorityQueue()
             seq = itertools.count()
-            q.put_nowait((1, next(seq), "Say something."))
-            q.put_nowait((2, next(seq), None))
+            q.put_nowait((1, next(seq), "Say something.", None))
+            q.put_nowait((2, next(seq), None, None))
             await p._tts_worker(q, "sess", asyncio.Event())
             assert p._playback_active.get("sess") is True
             await asyncio.sleep(0.7)
@@ -367,7 +371,7 @@ class TestPlaybackActive:
             p = _make_pipeline()
             q: asyncio.PriorityQueue = asyncio.PriorityQueue()
             seq = itertools.count()
-            q.put_nowait((1, next(seq), "Played already."))
+            q.put_nowait((1, next(seq), "Played already.", None))
             worker = asyncio.create_task(p._tts_worker(q, "sess", asyncio.Event()))
             await asyncio.sleep(0.3)
             worker.cancel()
@@ -563,7 +567,7 @@ class TestBackchannelTiming:
             )
 
             assert not q.empty()
-            prio, _, text = q.get_nowait()
+            prio, _, text, _prosody = q.get_nowait()
             assert prio == 0
             assert text in BACKCHANNEL_CANDIDATES["thinking"]
 
@@ -584,6 +588,24 @@ class TestBackchannelTiming:
             assert q.empty()
 
         asyncio.run(run())
+
+
+class FirstBlockThenStreamLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.cancelled = 0
+
+    async def generate_stream(self, messages):
+        self.calls += 1
+        if self.calls == 1:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled += 1
+                raise
+        else:
+            for token in ["Done. "]:
+                yield token
 
 
 class TestInterruptDuringThinking:
@@ -614,5 +636,44 @@ class TestInterruptDuringThinking:
             assert llm.cancelled == 1
             assert "sess" not in p._current_tasks
             assert p.tts.synthesized == []
+
+        asyncio.run(run())
+
+    def test_new_segment_cancels_previous_turn(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.turn_timing = TurnTiming(
+                base_delay=0.0, min_delay=0.0, max_delay=0.0
+            )
+            p.stt = FakeSTTText()
+            llm = FirstBlockThenStreamLLM()
+            p.llm = llm
+            p.tts = FakeTTSStream()
+
+            first = asyncio.create_task(
+                p._process_speech_segment(
+                    b"\x00" * 1600, "sess", ConversationContext()
+                )
+            )
+            await asyncio.sleep(0.05)
+            assert llm.calls == 1
+
+            second = asyncio.create_task(
+                p._process_speech_segment(
+                    b"\x00" * 1600, "sess", ConversationContext()
+                )
+            )
+            await asyncio.sleep(0.05)
+
+            assert first.cancelled()
+            assert llm.cancelled == 1
+            assert llm.calls == 2
+            await second
+
+            msgs: list[PipelineEvent] = []
+            while not p._output_queue.empty():
+                msgs.append(p._output_queue.get_nowait().event)
+            assert PipelineEvent.INTERRUPT in msgs
+            assert "sess" not in p._current_tasks
 
         asyncio.run(run())
