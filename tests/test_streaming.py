@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import itertools
 
-from core.pipeline import StreamingPipeline
+import pytest
+
+from core.pipeline import StreamingPipeline, ConversationContext
 from modules.backchannel.generator import BackchannelGenerator, BACKCHANNEL_CANDIDATES
 
 
@@ -98,3 +100,104 @@ class TestTTSWorkerPriority:
 
         synthesized = asyncio.run(run())
         assert synthesized == []
+
+
+class FakeSTTText:
+    async def transcribe(self, audio_blob: bytes) -> str:
+        return "hello world"
+
+
+class FakeLLMText:
+    async def generate_stream(self, messages):
+        for token in ["Hello ", "there, ", "this ", "is ", "a test."]:
+            yield token
+
+
+class FakeTTSStream:
+    sample_rate = 16000
+
+    def __init__(self) -> None:
+        self.synthesized: list[str] = []
+
+    async def synthesize_stream(self, text_chunks):
+        buf = ""
+        async for chunk in text_chunks:
+            buf += chunk
+        if buf:
+            self.synthesized.append(buf)
+            yield b"\x00\x00"
+
+    async def synthesize(self, text: str) -> bytes:
+        return b""
+
+
+class TestMultiSessionIsolation:
+    def test_signal_interrupt_cancels_only_target_session(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            cancelled: dict[str, bool] = {"A": False, "B": False}
+            block_a, block_b = asyncio.Event(), asyncio.Event()
+
+            async def blocker(name: str, block: asyncio.Event) -> None:
+                try:
+                    await block.wait()
+                except asyncio.CancelledError:
+                    cancelled[name] = True
+                    raise
+
+            task_a = asyncio.create_task(blocker("A", block_a))
+            task_b = asyncio.create_task(blocker("B", block_b))
+            p._current_tasks["A"] = task_a
+            p._current_tasks["B"] = task_b
+
+            await asyncio.sleep(0.01)
+            await p.signal_interrupt("A")
+            await asyncio.sleep(0.05)
+
+            assert cancelled["A"] is True
+            assert cancelled["B"] is False
+            assert not task_b.done()
+
+            task_b.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task_b
+
+        asyncio.run(run())
+
+    def test_signal_interrupt_unknown_session_does_not_crash(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            await p.signal_interrupt("unknown_session")
+            assert "unknown_session" not in p._current_tasks
+
+        asyncio.run(run())
+
+    def test_process_segment_streams_and_clears_task_map(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.stt = FakeSTTText()
+            p.llm = FakeLLMText()
+            p.tts = FakeTTSStream()
+            ctx = ConversationContext()
+
+            await p._process_speech_segment(b"\x00" * 1600, "sess", ctx)
+
+            assert "sess" not in p._current_tasks
+            assert p.tts.synthesized, "expected synthesized audio chunks"
+
+        asyncio.run(run())
+
+    def test_new_segment_replaces_previous_task_entry(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.stt = FakeSTTText()
+            p.llm = FakeLLMText()
+            p.tts = FakeTTSStream()
+
+            await p._process_speech_segment(b"\x00" * 1600, "sess", ConversationContext())
+            await p._process_speech_segment(b"\x00" * 1600, "sess", ConversationContext())
+
+            assert "sess" not in p._current_tasks
+            assert len(p.tts.synthesized) == 2
+
+        asyncio.run(run())

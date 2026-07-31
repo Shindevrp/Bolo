@@ -102,7 +102,7 @@ class StreamingPipeline:
         self._output_queue: asyncio.Queue[PipelineMessage] = asyncio.Queue(512)
         self._interrupt_events: dict[str, asyncio.Event] = {}
         self._tasks: list[asyncio.Task] = []
-        self._current_task: asyncio.Task | None = None
+        self._current_tasks: dict[str, asyncio.Task] = {}
         self._running = False
         self._contexts: dict[str, ConversationContext] = {}
         self._memories: dict[str, SessionMemory] = {}
@@ -152,12 +152,14 @@ class StreamingPipeline:
         self._retrievals.pop(session_id, None)
         self._contexts.pop(session_id, None)
         self._interrupt_events.pop(session_id, None)
+        self._current_tasks.pop(session_id, None)
 
     async def signal_interrupt(self, session_id: str = "default") -> None:
         ev = self._int_event(session_id)
         ev.set()
-        if self._current_task and not self._current_task.done():
-            self._current_task.cancel()
+        task = self._current_tasks.get(session_id)
+        if task and not task.done():
+            task.cancel()
         logger.info(f"interrupt signaled for session {session_id}")
 
     async def output_stream(self) -> AsyncGenerator[PipelineMessage, None]:
@@ -224,8 +226,8 @@ class StreamingPipeline:
             if is_speech:
                 if not is_speaking:
                     barge_in_pending = (
-                        self._current_task is not None
-                        and not self._current_task.done()
+                        self._current_tasks.get(sid) is not None
+                        and not self._current_tasks[sid].done()
                         and ctx.dialogue_state == DialogueState.INTERRUPTIBLE
                     )
                     is_speaking = True
@@ -330,7 +332,7 @@ class StreamingPipeline:
     ) -> None:
         int_ev = self._int_event(session_id)
         int_ev.clear()
-        self._current_task = asyncio.current_task()
+        self._current_tasks[session_id] = asyncio.current_task()
         tts_worker: asyncio.Task | None = None
         bc_timer: asyncio.Task | None = None
 
@@ -592,6 +594,9 @@ class StreamingPipeline:
         except Exception as e:
             logger.error(f"processing error session={session_id} error={e}")
             await self._emit(PipelineEvent.ERROR, str(e), session_id)
+        finally:
+            if self._current_tasks.get(session_id) is asyncio.current_task():
+                self._current_tasks.pop(session_id, None)
 
     @staticmethod
     async def _drain_queue(queue: asyncio.Queue) -> None:
