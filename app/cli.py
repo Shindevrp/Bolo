@@ -54,10 +54,10 @@ async def _run_demo(args: argparse.Namespace) -> None:
     from utils.logger import logger
 
     print("Initializing TASA pipeline...")
-    stt = FasterWhisperSTT(model_size=args.stt_model, device="cpu")
+    stt = FasterWhisperSTT(model_size=args.stt_model, device="cuda")
     llm = VLLMProvider(base_url=args.llm_url, model=args.llm_model)
     tts = PiperTTS(model_path=args.tts_model)
-    vad = SileroVAD(threshold=args.vad_threshold)
+    vad = SileroVAD(threshold=args.vad_threshold, device="cuda")
     pipeline = StreamingPipeline(stt=stt, llm=llm, tts=tts, vad=vad)
     await pipeline.start()
 

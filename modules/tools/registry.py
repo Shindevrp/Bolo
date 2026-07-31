@@ -33,22 +33,12 @@ class ToolRegistry:
     def system_prompt_block(self) -> str:
         if not self._tools:
             return ""
-        lines = [
-            "\nYou have access to the following tools. When you need to use a tool, "
-            "respond with the exact format: {tool:tool_name(param1, param2, ...)}",
-            "Then continue with your response. I will execute the tool and give you the result.",
-            "\nAvailable tools:",
-        ]
-        for t in self._tools.values():
-            params = ", ".join(
-                f"{k}: {v.get('description', k)}"
-                for k, v in t.parameters.get("properties", {}).items()
-            )
-            lines.append(f"  - {t.name}({params}): {t.description}")
-        lines.append(
-            "\nOnly use tools when necessary. For simple questions, respond normally."
+        names = ", ".join(sorted(self._tools.keys()))
+        return (
+            f"\nYou have access to tools: {{{names}}}. "
+            f"Use format: {{tool:name(args)}}. "
+            f"Only use them if explicitly asked."
         )
-        return "\n".join(lines)
 
     def find_calls(self, text: str) -> list[dict[str, str]]:
         calls = []

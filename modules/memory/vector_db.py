@@ -15,7 +15,13 @@ class VectorDB:
             return
         from sentence_transformers import SentenceTransformer
         self._encoder = SentenceTransformer("all-MiniLM-L6-v2")
-        self.embedding_dim = self._encoder.get_sentence_embedding_dimension()
+        try:
+            self.embedding_dim = self._encoder.get_embedding_dimension()
+        except AttributeError:
+            self.embedding_dim = self._encoder.get_sentence_embedding_dimension()
+
+    def warm_up(self) -> None:
+        self._lazy_load_encoder()
 
     def add(self, text: str) -> None:
         self._lazy_load_encoder()

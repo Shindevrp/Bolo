@@ -132,6 +132,12 @@ class StreamingPipeline:
     ) -> None:
         self._memories[session_id] = memory
         self._retrievals[session_id] = retrieval
+        try:
+            asyncio.create_task(
+                asyncio.to_thread(retrieval.warm_up)
+            )
+        except RuntimeError:
+            pass
 
     def unregister_session(self, session_id: str) -> None:
         self._memories.pop(session_id, None)
@@ -182,7 +188,7 @@ class StreamingPipeline:
         silence_ms = 0.0
         chunk_count = 0
         prosody_update_interval = 5
-        partial_transcript_interval = 1.5
+        partial_transcript_interval = 1.0
         last_partial_time = 0.0
 
         while self._running:
@@ -206,7 +212,7 @@ class StreamingPipeline:
 
             if is_speech:
                 if not is_speaking:
-                    if self._current_task and not self._current_task.done():
+                    if self._current_task and not self._current_task.done() and ctx.dialogue_state == DialogueState.INTERRUPTIBLE:
                         await self.signal_interrupt(sid)
                         ctx.dialogue_state = DialogueState.LISTENING
                         await self._emit(
@@ -263,19 +269,19 @@ class StreamingPipeline:
                             ctx.last_partial_transcript
                         )
 
-                    adaptive_threshold = 400.0
+                    adaptive_threshold = 250.0
                     if semantic_score >= 0.8:
-                        adaptive_threshold = 150.0
+                        adaptive_threshold = 80.0
                     elif semantic_score >= 0.6:
-                        adaptive_threshold = 200.0
+                        adaptive_threshold = 120.0
                     elif semantic_score <= 0.2 and len(ctx.last_partial_transcript.split()) > 2:
-                        adaptive_threshold = 500.0
-                    elif turn_decision == "end_turn_force":
-                        adaptive_threshold = 200.0
-                    elif turn_decision == "end_turn":
                         adaptive_threshold = 300.0
+                    elif turn_decision == "end_turn_force":
+                        adaptive_threshold = 100.0
+                    elif turn_decision == "end_turn":
+                        adaptive_threshold = 180.0
                     elif ctx.engagement > 0.7:
-                        adaptive_threshold = 350.0
+                        adaptive_threshold = 200.0
 
                     if silence_ms >= adaptive_threshold:
                         is_speaking = False
@@ -390,28 +396,12 @@ class StreamingPipeline:
             import re
 
             full = ""
-            token_buffer: list[str] = []
 
             if used_speculation:
                 full = spec_full or ""
                 ctx.dialogue_state = DialogueState.INTERRUPTIBLE
-                sentences = [
-                    s.strip()
-                    for s in re.split(r"(?<=[.!?])\s+", full)
-                    if s.strip()
-                ]
-                sentence_buffer = ""
-                if sentences:
-                    for sentence in sentences[:-1]:
-                        if self._interrupt_event.is_set():
-                            break
-                        task = asyncio.create_task(
-                            self._synthesize_sentence(sentence, session_id)
-                        )
-                        tts_tasks.append(task)
-                    sentence_buffer = sentences[-1]
+                sentence_buffer = full
             else:
-                # LLM streaming with parallel TTS (sentence-level overlap)
                 llm_start = time.perf_counter()
                 sentence_buffer = ""
                 first_token = True
@@ -426,24 +416,9 @@ class StreamingPipeline:
                         first_token = False
                     full += token
                     sentence_buffer += token
-                    token_buffer.append(token)
-
-                    while True:
-                        match = re.search(r'(?<=[.!?])\s+', sentence_buffer)
-                        if not match:
-                            break
-                        idx = match.end()
-                        sentence = sentence_buffer[:idx].strip()
-                        sentence_buffer = sentence_buffer[idx:].strip()
-                        if sentence:
-                            task = asyncio.create_task(
-                                self._synthesize_sentence(sentence, session_id)
-                            )
-                            tts_tasks.append(task)
+                    await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
 
                 if self._interrupt_event.is_set():
-                    for t in tts_tasks:
-                        t.cancel()
                     return
 
                 self._latency.measure("llm_full", llm_start)
@@ -452,7 +427,9 @@ class StreamingPipeline:
             if memory:
                 memory.add("assistant", full)
             if retrieval:
-                retrieval.add_to_long_term(full)
+                asyncio.create_task(
+                    asyncio.to_thread(retrieval.add_to_long_term, full)
+                )
 
             # Check for tool calls in the response
             tool_calls = self._tool_registry.find_calls(full)
@@ -487,28 +464,9 @@ class StreamingPipeline:
                     full += token
                     sentence_buffer += token
                     await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
-                    while True:
-                        match = re.search(r'(?<=[.!?])\s+', sentence_buffer)
-                        if not match:
-                            break
-                        idx = match.end()
-                        sentence = sentence_buffer[:idx].strip()
-                        sentence_buffer = sentence_buffer[idx:].strip()
-                        if sentence:
-                            task = asyncio.create_task(
-                                self._synthesize_sentence(sentence, session_id)
-                            )
-                            tts_tasks.append(task)
 
                 if self._interrupt_event.is_set():
-                    for t in tts_tasks:
-                        t.cancel()
                     return
-
-            else:
-                # No tool calls — emit buffered tokens
-                for t in token_buffer:
-                    await self._emit(PipelineEvent.LLM_TOKEN, t, session_id)
 
             await self._emit(PipelineEvent.LLM_DONE, full, session_id)
 

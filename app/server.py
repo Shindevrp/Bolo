@@ -41,9 +41,9 @@ def _build_providers():
     from modules.backchannel.timing import BackchannelTiming
 
     stt = FasterWhisperSTT(
-        model_size=os.getenv("TASA_STT_MODEL", "base"),
-        device=os.getenv("TASA_STT_DEVICE", "cpu"),
-        compute_type=os.getenv("TASA_STT_COMPUTE", "int8"),
+        model_size=os.getenv("TASA_STT_MODEL", "tiny"),
+        device=os.getenv("TASA_STT_DEVICE", "cuda"),
+        compute_type=os.getenv("TASA_STT_COMPUTE", "float16"),
     )
 
     llm = VLLMProvider(
@@ -54,11 +54,14 @@ def _build_providers():
     tts = PiperTTS(
         model_path=os.getenv(
             "TASA_TTS_MODEL",
-            "/usr/share/piper/voices/en_US-lessac-medium.onnx",
+            str(Path(__file__).parent.parent / "models" / "en_US-lessac-medium.onnx"),
         ),
     )
 
-    vad = SileroVAD(threshold=float(os.getenv("TASA_VAD_THRESHOLD", "0.5")))
+    vad = SileroVAD(
+        threshold=float(os.getenv("TASA_VAD_THRESHOLD", "0.5")),
+        device=os.getenv("TASA_VAD_DEVICE", "cuda"),
+    )
 
     turn_detector = TurnDetector()
     interrupt_handler = InterruptHandler()
@@ -87,6 +90,15 @@ async def lifespan(app: FastAPI):
         app.state.pipeline = pipeline
         app.state.start_time = time.time()
         await pipeline.start()
+        # Warm up LLM so first user request doesn't pay 30s model load
+        try:
+            logger.info("warming up LLM...")
+            warmup_msgs = [{"role": "user", "content": "hi"}]
+            async for _ in llm.generate_stream(warmup_msgs):
+                pass
+            logger.info("LLM warmed up")
+        except Exception as e:
+            logger.warning(f"LLM warmup failed (non-critical): {e}")
         logger.info("pipeline initialized")
     except Exception as e:
         logger.error(f"pipeline init failed: {e}")

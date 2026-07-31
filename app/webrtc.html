@@ -165,7 +165,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
           addMsg('assistant',m.token,true);
         }
         else if(m.type==='llm_done'){sts('','Done');dbg('Response complete');}
-        else if(m.type==='tts_done'){setTimeout(stop,800);}
+        else if(m.type==='tts_done'){sts('on','Listening...');dbg('TTS done, listening');}
         else if(m.type==='backchannel'){dbg('TASA: '+m.text);}
         else if(m.type==='interrupt'){duckAudio();sts('on','Listening...');dbg('Interruption detected');}
         else if(m.type==='status'){dbg(m.text);}

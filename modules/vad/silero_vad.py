@@ -13,10 +13,12 @@ class SileroVAD:
         threshold: float = 0.5,
         sample_rate: int = 16000,
         frame_ms: int = 30,
+        device: str = "cpu",
     ) -> None:
         self.threshold = threshold
         self.sample_rate = sample_rate
         self.frame_size = sample_rate * frame_ms // 1000
+        self.device = device
         self.model = self._load_model(model_path)
 
     def _load_model(self, model_path: str | None) -> torch.nn.Module:
@@ -28,6 +30,7 @@ class SileroVAD:
             trust_repo=True,
         )
         model.eval()
+        model.to(self.device)
         return model
 
     def reset(self) -> None:
@@ -45,7 +48,7 @@ class SileroVAD:
                 frame = audio[start:start + num_samples]
                 if len(frame) < num_samples:
                     break
-                audio_tensor = torch.from_numpy(frame).unsqueeze(0)
+                audio_tensor = torch.from_numpy(frame).unsqueeze(0).to(self.device)
                 prob = self.model(audio_tensor, self.sample_rate)
                 if isinstance(prob, tuple):
                     prob = prob[0]

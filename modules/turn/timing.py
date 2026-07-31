@@ -15,11 +15,11 @@ class TurnTiming:
 
     def __init__(
         self,
-        base_delay: float = 0.3,
-        min_delay: float = 0.15,
-        max_delay: float = 1.2,
-        engagement_factor: float = 0.3,
-        duration_factor: float = 0.15,
+        base_delay: float = 0.15,
+        min_delay: float = 0.05,
+        max_delay: float = 0.6,
+        engagement_factor: float = 0.4,
+        duration_factor: float = 0.1,
     ) -> None:
         self.base_delay = base_delay
         self.min_delay = min_delay

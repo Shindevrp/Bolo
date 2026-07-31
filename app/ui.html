@@ -100,7 +100,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
   /* ---------- Voice ---------- */
   var b=document.getElementById('vcb'),d=document.getElementById('vcd'),l=document.getElementById('vcl'),
       c=document.getElementById('vcc'),db=document.getElementById('vdbg'),er=document.getElementById('verr');
-  var ws=null,st=null,ac=null,pr=null,sc=null,act=false,reconn=null,mode='voice',
+  var ws=null,st=null,ac=null,pr=null,sc=null,act=false,reconn=null,mode='voice',mr=null,
       retryDelay=1000,maxRetryDelay=30000,audioQ=[],audioPlaying=false,gainNode=null;
 
   function dbg(t){db.textContent=t;}
@@ -111,7 +111,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
     var box=mode==='hybrid'?c:c;
     var empty=box.querySelector('.empty-state');
     if(empty)empty.remove();
-    if(!append||!box.lastElementChild||!box.lastElementChild.classList.contains('msg.'+role)){
+    if(!append||!box.lastElementChild||box.lastElementChild.className.indexOf('msg '+role)===-1){
       var el=document.createElement('div');
       el.className='msg '+role;
       el.innerHTML='<span class="lbl">'+(role==='user'?'You':role==='assistant'?'TASA':'System')+'</span><span class="txt">'+esc(text)+'</span>';
@@ -123,20 +123,33 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
     box.scrollTop=box.scrollHeight;
   }
 
+  var _pcmCnt=0;
+  function sendPcm(inp){
+    try{
+      var pcm=new Int16Array(inp.length);
+      var peak=0;
+      for(var i=0;i<inp.length;i++){var s=Math.max(-1,Math.min(1,inp[i]));pcm[i]=s<0?s*0x8000:s*0x7FFF;if(Math.abs(s)>peak)peak=Math.abs(s);}
+      if(ws&&ws.readyState===1){ws.send(pcm.buffer);if(++_pcmCnt%10===0)dbg('Audio peak='+peak.toFixed(3));}
+    }catch(x){}
+  }
+
   function startVoice(){
     dbg('Requesting mic...');
     if(!ac){
-      try{ac=new(window.AudioContext||window.webkitAudioContext)({sampleRate:16000});}catch(e){
-        try{ac=new(window.AudioContext||window.webkitAudioContext)();}catch(e2){err('AudioContext not available');return;}
+      var _ac16000=true;
+      try{ac=new(window.AudioContext||window.webkitAudioContext)({sampleRate:16000});}catch(e){_ac16000=false;
+        try{ac=new(window.AudioContext||window.webkitAudioContext)();}catch(e2){err('AudioContext not supported');return;}
       }
+      dbg(_ac16000?'Audio 16kHz':'Audio fallback '+ac.sampleRate+'Hz');
     }
-    ac.resume().catch(function(){});
     navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:true}})
     .then(function(s){
       st=s;dbg('Mic ready');
       sc=ac.createMediaStreamSource(s);
       pr=ac.createScriptProcessor(4096,1,1);
       sc.connect(pr);
+      var gag=ac.createGain();gag.gain.value=0;pr.connect(gag);gag.connect(ac.destination);
+      pr.onaudioprocess=function(e){sendPcm(e.inputBuffer.getChannelData(0));};
       dbg('Connecting...');
       var proto=location.protocol==='https:'?'wss:':'ws:';
       var host=location.host;
@@ -144,13 +157,6 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
       ws.onopen=function(){
         act=true;retryDelay=1000;b.classList.add('rec');b.textContent='🔴';sts('on','Listening...');
         c.innerHTML='<div class="empty-state">Speak or type below...</div>';
-        pr.onaudioprocess=function(e){
-          try{
-            var inp=e.inputBuffer.getChannelData(0),pcm=new Int16Array(inp.length);
-            for(var i=0;i<inp.length;i++){var s=Math.max(-1,Math.min(1,inp[i]));pcm[i]=s<0?s*0x8000:s*0x7FFF;}
-            if(ws&&ws.readyState===1)ws.send(pcm.buffer);
-          }catch(x){}
-        };
       };
       function duckAudio(){
         if(gainNode){
@@ -206,7 +212,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
             addMsg('assistant',m.token,true);
           }
           else if(m.type==='llm_done'){sts('','Done');dbg('Response complete');}
-          else if(m.type==='tts_done'){setTimeout(stopVoice,800);dbg('TTS done');}
+          else if(m.type==='tts_done'){if(act)sts('on','Listening...');dbg('TTS done');}
           else if(m.type==='backchannel'){dbg('TASA: '+m.text);}
           else if(m.type==='interrupt'){duckAudio();sts('on','Listening...');dbg('Interruption detected');}
           else if(m.type==='status'){dbg(m.text);}
@@ -240,7 +246,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
     if(reconn){clearTimeout(reconn);reconn=null;}
     if(pr){try{pr.disconnect();}catch(e){}pr=null;}
     if(sc){try{sc.disconnect();}catch(e){}sc=null;}
-    if(st){st.getTracks().forEach(function(t){t.stop();});st=null;}
+    if(st){try{st.getTracks().forEach(function(t){t.stop();});}catch(e){}st=null;}
     if(ws){try{ws.close();}catch(e){}ws=null;}
     audioQ=[];audioPlaying=false;
     b.classList.remove('rec');b.textContent='🎤';

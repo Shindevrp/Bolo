@@ -26,3 +26,6 @@ class RetrievalModule:
 
     def add_to_long_term(self, text: str) -> None:
         self.vector_db.add(text)
+
+    def warm_up(self) -> None:
+        self.vector_db.warm_up()

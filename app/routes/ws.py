@@ -111,7 +111,8 @@ async def audio_websocket(websocket: WebSocket):
                         "text": str(msg.data),
                     })
 
-            except Exception:
+            except Exception as ex:
+                logger.warning(f"session {session_id} pump_output error: {ex}")
                 break
 
     pump_task = None
@@ -122,6 +123,8 @@ async def audio_websocket(websocket: WebSocket):
             raw = await websocket.receive()
 
             if raw.get("type") == "websocket.disconnect":
+                code = raw.get("code", 1005)
+                logger.info(f"session {session_id} client disconnect code={code}")
                 break
 
             _active_sessions[session_id] = time.time()

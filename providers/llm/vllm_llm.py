@@ -14,7 +14,7 @@ class VLLMProvider(LLMProvider):
         api_key: str = "EMPTY",
         model: str = "Qwen/Qwen2.5-7B-Instruct-AWQ",
         temperature: float = 0.7,
-        max_tokens: int = 512,
+        max_tokens: int = 256,
         top_p: float = 0.9,
     ) -> None:
         self.client = AsyncOpenAI(base_url=base_url, api_key=api_key)

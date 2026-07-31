@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import AsyncGenerator
 
 import piper
+import numpy as np
 
 from providers.tts.base import TTSProvider
 
@@ -14,10 +15,10 @@ class PiperTTS(TTSProvider):
         self,
         model_path: str,
         model_config_path: str | None = None,
-        sentence_silence: float = 0.15,
-        length_scale: float = 1.0,
-        noise_scale: float = 0.667,
-        noise_w: float = 0.8,
+        sentence_silence: float = 0.02,
+        length_scale: float = 0.65,
+        noise_scale: float = 0.4,
+        noise_w: float = 0.5,
     ) -> None:
         self.model_path = Path(model_path)
         self.model_config_path = (
@@ -31,12 +32,18 @@ class PiperTTS(TTSProvider):
         )
         self._voice = None
         self._sample_rate: int = 22050
+        self._warm_up()
+
+    def _warm_up(self) -> None:
+        _ = self.voice
 
     @property
     def voice(self) -> piper.PiperVoice:
         if self._voice is None:
             self._voice = piper.PiperVoice.load(
-                self.model_path, config_path=self.model_config_path
+                self.model_path,
+                config_path=self.model_config_path,
+                use_cuda=True,
             )
             self._sample_rate = self._voice.config.sample_rate
         return self._voice
@@ -49,13 +56,16 @@ class PiperTTS(TTSProvider):
         import re
         return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
 
-    def _synthesize_sentence(self, sentence: str) -> bytes:
-        audio_chunks = list(
-            self.voice.synthesize(sentence, syn_config=self._syn_config)
-        )
+    def _synthesize_sentence_chunks(self, sentence: str) -> list[bytes]:
+        chunks = []
+        for chunk in self.voice.synthesize(sentence, syn_config=self._syn_config):
+            chunks.append(bytes(chunk.audio_int16_bytes))
+        return chunks
+
+    def _synthesize_to_bytes(self, sentence: str) -> bytes:
         audio = bytearray()
-        for chunk in audio_chunks:
-            audio.extend(chunk.audio.tobytes())
+        for chunk in self.voice.synthesize(sentence, syn_config=self._syn_config):
+            audio.extend(chunk.audio_int16_bytes)
         return bytes(audio)
 
     async def synthesize_stream(
@@ -68,23 +78,23 @@ class PiperTTS(TTSProvider):
             if not sentences:
                 continue
             for sentence in sentences[:-1]:
-                audio = await asyncio.to_thread(self._synthesize_sentence, sentence)
-                if audio:
-                    yield audio
-                    await asyncio.sleep(self.sentence_silence)
+                chunks = await asyncio.to_thread(self._synthesize_sentence_chunks, sentence)
+                for audio_chunk in chunks:
+                    yield audio_chunk
+                    await asyncio.sleep(0)
             buffer = sentences[-1]
 
         if buffer.strip():
-            audio = await asyncio.to_thread(
-                self._synthesize_sentence, buffer.strip()
+            chunks = await asyncio.to_thread(
+                self._synthesize_sentence_chunks, buffer.strip()
             )
-            if audio:
-                yield audio
+            for audio_chunk in chunks:
+                yield audio_chunk
 
     async def synthesize(self, text: str) -> bytes:
         audio = bytearray()
         sentences = self._split_sentences(text)
         for sentence in sentences:
-            chunk = await asyncio.to_thread(self._synthesize_sentence, sentence)
+            chunk = await asyncio.to_thread(self._synthesize_to_bytes, sentence)
             audio.extend(chunk)
         return bytes(audio)
