@@ -111,6 +111,14 @@ class StreamingPipeline:
         self._playback_clear_tasks: dict[str, asyncio.Task] = {}
         self._playback_onset: dict[str, float] = {}
         self._echo_floor: dict[str, float] = {}
+        self._speaking: dict[str, bool] = {}
+        self._speech_buffers: dict[str, bytearray] = {}
+        self._silence_ms: dict[str, float] = {}
+        self._last_partial_time: dict[str, float] = {}
+        self._barge_pending: dict[str, bool] = {}
+        self._barge_thresholds: dict[str, float] = {}
+        self._barge_frames: dict[str, int] = {}
+        self._interrupt_handlers: dict[str, InterruptHandler] = {}
         self._running = False
         self._contexts: dict[str, ConversationContext] = {}
         self._memories: dict[str, SessionMemory] = {}
@@ -120,6 +128,18 @@ class StreamingPipeline:
         if session_id not in self._interrupt_events:
             self._interrupt_events[session_id] = asyncio.Event()
         return self._interrupt_events[session_id]
+
+    def _interrupt_handler(self, session_id: str) -> InterruptHandler:
+        handler = self._interrupt_handlers.get(session_id)
+        if handler is None:
+            handler = InterruptHandler(
+                speech_energy_threshold=self.interrupt_handler.speech_energy_threshold,
+                silence_confidence_threshold=self.interrupt_handler.silence_confidence_threshold,
+                consecutive_speech_frames=self.interrupt_handler.consecutive_speech_frames,
+                playback_consecutive_speech_frames=self.interrupt_handler.playback_consecutive_speech_frames,
+            )
+            self._interrupt_handlers[session_id] = handler
+        return handler
 
     async def start(self) -> None:
         self._running = True
@@ -139,6 +159,14 @@ class StreamingPipeline:
         self._playback_active.clear()
         self._playback_onset.clear()
         self._echo_floor.clear()
+        self._speaking.clear()
+        self._speech_buffers.clear()
+        self._silence_ms.clear()
+        self._last_partial_time.clear()
+        self._barge_pending.clear()
+        self._barge_thresholds.clear()
+        self._barge_frames.clear()
+        self._interrupt_handlers.clear()
         logger.info("pipeline stopped")
 
     async def push_audio(self, chunk: bytes, session_id: str = "default") -> None:
@@ -170,6 +198,14 @@ class StreamingPipeline:
         self._playback_active.pop(session_id, None)
         self._playback_onset.pop(session_id, None)
         self._echo_floor.pop(session_id, None)
+        self._speaking.pop(session_id, None)
+        self._speech_buffers.pop(session_id, None)
+        self._silence_ms.pop(session_id, None)
+        self._last_partial_time.pop(session_id, None)
+        self._barge_pending.pop(session_id, None)
+        self._barge_thresholds.pop(session_id, None)
+        self._barge_frames.pop(session_id, None)
+        self._interrupt_handlers.pop(session_id, None)
         clear_task = self._playback_clear_tasks.pop(session_id, None)
         if clear_task and not clear_task.done():
             clear_task.cancel()
@@ -221,16 +257,9 @@ class StreamingPipeline:
             ctx.engagement = max(0.1, ctx.engagement - 0.01)
 
     async def _pipeline_loop(self) -> None:
-        speech_buffer = bytearray()
-        is_speaking = False
-        silence_ms = 0.0
         chunk_count = 0
         prosody_update_interval = 5
         partial_transcript_interval = 1.0
-        last_partial_time = 0.0
-        barge_in_pending = False
-        barge_thresholds: dict[str, float] = {}
-        barge_frames: dict[str, int] = {}
 
         while self._running:
             try:
@@ -244,6 +273,8 @@ class StreamingPipeline:
             sid = msg.session_id
             ctx = self._ctx(sid)
             chunk_count += 1
+            is_speaking = self._speaking.get(sid, False)
+            speech_buffer = self._speech_buffers.get(sid)
 
             try:
                 is_speech = self.vad.is_speech(chunk)
@@ -264,7 +295,7 @@ class StreamingPipeline:
                         self._current_tasks.get(sid) is not None
                         and not self._current_tasks[sid].done()
                     )
-                    barge_in_pending = (
+                    barge_pending = (
                         playback_on
                         and not in_echo_grace
                         or (
@@ -274,7 +305,8 @@ class StreamingPipeline:
                             == DialogueState.INTERRUPTIBLE
                         )
                     )
-                    if barge_in_pending:
+                    self._barge_pending[sid] = barge_pending
+                    if barge_pending:
                         threshold = (
                             self.interrupt_handler.speech_energy_threshold
                         )
@@ -290,19 +322,20 @@ class StreamingPipeline:
                             target_frames = (
                                 self.interrupt_handler.playback_consecutive_speech_frames
                             )
-                        barge_thresholds[sid] = threshold
-                        barge_frames[sid] = target_frames
-                        self.interrupt_handler.reset()
-                    is_speaking = True
+                        self._barge_thresholds[sid] = threshold
+                        self._barge_frames[sid] = target_frames
+                        self._interrupt_handler(sid).reset()
+                    self._speaking[sid] = True
                     ctx.dialogue_state = DialogueState.LISTENING
-                    silence_ms = 0.0
-                    speech_buffer = bytearray(chunk)
-                    last_partial_time = time.time()
+                    self._silence_ms[sid] = 0.0
+                    self._speech_buffers[sid] = bytearray(chunk)
+                    speech_buffer = self._speech_buffers[sid]
+                    self._last_partial_time[sid] = time.time()
                     self.turn_detector.reset()
                     self.vad.reset()
                     await self._emit(PipelineEvent.SPEECH_START, session_id=sid)
                 else:
-                    silence_ms = 0.0
+                    self._silence_ms[sid] = 0.0
                     speech_buffer.extend(chunk)
                     energy = rms_energy(bytes(chunk)) / 32768.0
                     playback_on = self._playback_active.get(sid, False)
@@ -318,7 +351,7 @@ class StreamingPipeline:
                         and ctx.dialogue_state == DialogueState.INTERRUPTIBLE
                     )
                     if (
-                        not barge_in_pending
+                        not self._barge_pending.get(sid, False)
                         and not in_echo_grace
                         and assistant_responding
                     ):
@@ -338,33 +371,34 @@ class StreamingPipeline:
                                 self.interrupt_handler.playback_consecutive_speech_frames
                             )
                         if energy > threshold:
-                            barge_in_pending = True
-                            barge_thresholds[sid] = threshold
-                            barge_frames[sid] = target_frames
-                            self.interrupt_handler.reset()
+                            self._barge_pending[sid] = True
+                            self._barge_thresholds[sid] = threshold
+                            self._barge_frames[sid] = target_frames
+                            self._interrupt_handler(sid).reset()
                             logger.debug(
                                 f"barge-in candidate session={sid} energy={energy:.3f}"
                                 f" threshold={threshold:.3f}"
                             )
-                    if barge_in_pending:
-                        threshold = barge_thresholds.get(
+                    if self._barge_pending.get(sid, False):
+                        handler = self._interrupt_handler(sid)
+                        threshold = self._barge_thresholds.get(
                             sid,
                             self.interrupt_handler.speech_energy_threshold,
                         )
-                        target_frames = barge_frames.get(
+                        target_frames = self._barge_frames.get(
                             sid,
                             self.interrupt_handler.consecutive_speech_frames,
                         )
-                        if self.interrupt_handler.should_interrupt(
+                        if handler.should_interrupt(
                             energy,
                             0.0,
                             True,
                             threshold=threshold,
                             target_frames=target_frames,
                         ):
-                            barge_in_pending = False
-                            barge_thresholds.pop(sid, None)
-                            barge_frames.pop(sid, None)
+                            self._barge_pending[sid] = False
+                            self._barge_thresholds.pop(sid, None)
+                            self._barge_frames.pop(sid, None)
                             await self.signal_interrupt(sid)
                             ctx.dialogue_state = DialogueState.LISTENING
                             await self._emit(
@@ -379,8 +413,11 @@ class StreamingPipeline:
                     )
 
                 now = time.time()
-                if now - last_partial_time >= partial_transcript_interval:
-                    last_partial_time = now
+                if (
+                    now - self._last_partial_time.get(sid, 0.0)
+                    >= partial_transcript_interval
+                ):
+                    self._last_partial_time[sid] = now
                     partial_blob = bytes(speech_buffer)
                     asyncio.create_task(
                         self._partial_transcribe(partial_blob, sid, ctx)
@@ -400,8 +437,12 @@ class StreamingPipeline:
             else:
                 if is_speaking:
                     speech_buffer.extend(chunk)
-                    silence_ms += len(chunk) / (self.vad.sample_rate * 2 / 1000)
-                    self.interrupt_handler.reset()
+                    silence_ms = (
+                        self._silence_ms.get(sid, 0.0)
+                        + len(chunk) / (self.vad.sample_rate * 2 / 1000)
+                    )
+                    self._silence_ms[sid] = silence_ms
+                    self._interrupt_handler(sid).reset()
 
                     turn_decision = self.turn_detector.process_chunk(chunk, False)
 
@@ -426,13 +467,13 @@ class StreamingPipeline:
                         adaptive_threshold = 200.0
 
                     if silence_ms >= adaptive_threshold:
-                        is_speaking = False
-                        barge_in_pending = False
-                        barge_thresholds.pop(sid, None)
-                        barge_frames.pop(sid, None)
-                        self.interrupt_handler.reset()
+                        self._speaking[sid] = False
+                        self._barge_pending[sid] = False
+                        self._barge_thresholds.pop(sid, None)
+                        self._barge_frames.pop(sid, None)
+                        self._interrupt_handler(sid).reset()
                         audio_blob = bytes(speech_buffer)
-                        speech_buffer.clear()
+                        self._speech_buffers[sid] = bytearray()
                         self.vad.reset()
                         self.turn_detector.reset()
 
@@ -677,8 +718,8 @@ class StreamingPipeline:
                         first_token = False
                     full += token
                     await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
-                    for c in chunker.feed(self._tool_registry.strip_calls(token)):
-                        await push(1, c)
+                    for c in chunker.feed(token):
+                        await push(1, self._tool_registry.strip_calls(c))
 
                 if int_ev.is_set():
                     return
