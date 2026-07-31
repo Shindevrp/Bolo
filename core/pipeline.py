@@ -8,6 +8,7 @@ from enum import Enum, auto
 from typing import AsyncGenerator
 
 from modules.tts.chunker import TTSChunker
+from modules.tts.sanitize import sanitize_for_tts
 from providers.stt.base import STTProvider
 from providers.llm.base import LLMProvider
 from providers.tts.base import TTSProvider
@@ -30,6 +31,9 @@ from utils.audio import rms_energy
 from utils.logger import get_logger
 
 logger = get_logger("pipeline")
+
+ECHO_GRACE_SECONDS = 0.35
+ECHO_FLOOR_MARGIN = 1.5
 
 
 class PipelineEvent(Enum):
@@ -103,6 +107,10 @@ class StreamingPipeline:
         self._interrupt_events: dict[str, asyncio.Event] = {}
         self._tasks: list[asyncio.Task] = []
         self._current_tasks: dict[str, asyncio.Task] = {}
+        self._playback_active: dict[str, bool] = {}
+        self._playback_clear_tasks: dict[str, asyncio.Task] = {}
+        self._playback_onset: dict[str, float] = {}
+        self._echo_floor: dict[str, float] = {}
         self._running = False
         self._contexts: dict[str, ConversationContext] = {}
         self._memories: dict[str, SessionMemory] = {}
@@ -125,6 +133,12 @@ class StreamingPipeline:
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+        for task in self._playback_clear_tasks.values():
+            task.cancel()
+        self._playback_clear_tasks.clear()
+        self._playback_active.clear()
+        self._playback_onset.clear()
+        self._echo_floor.clear()
         logger.info("pipeline stopped")
 
     async def push_audio(self, chunk: bytes, session_id: str = "default") -> None:
@@ -153,6 +167,12 @@ class StreamingPipeline:
         self._contexts.pop(session_id, None)
         self._interrupt_events.pop(session_id, None)
         self._current_tasks.pop(session_id, None)
+        self._playback_active.pop(session_id, None)
+        self._playback_onset.pop(session_id, None)
+        self._echo_floor.pop(session_id, None)
+        clear_task = self._playback_clear_tasks.pop(session_id, None)
+        if clear_task and not clear_task.done():
+            clear_task.cancel()
 
     async def signal_interrupt(self, session_id: str = "default") -> None:
         ev = self._int_event(session_id)
@@ -160,6 +180,12 @@ class StreamingPipeline:
         task = self._current_tasks.get(session_id)
         if task and not task.done():
             task.cancel()
+        self._playback_active[session_id] = False
+        self._playback_onset.pop(session_id, None)
+        self._echo_floor.pop(session_id, None)
+        clear_task = self._playback_clear_tasks.pop(session_id, None)
+        if clear_task and not clear_task.done():
+            clear_task.cancel()
         logger.info(f"interrupt signaled for session {session_id}")
 
     async def output_stream(self) -> AsyncGenerator[PipelineMessage, None]:
@@ -203,6 +229,8 @@ class StreamingPipeline:
         partial_transcript_interval = 1.0
         last_partial_time = 0.0
         barge_in_pending = False
+        barge_thresholds: dict[str, float] = {}
+        barge_frames: dict[str, int] = {}
 
         while self._running:
             try:
@@ -225,11 +253,46 @@ class StreamingPipeline:
 
             if is_speech:
                 if not is_speaking:
-                    barge_in_pending = (
+                    playback_on = self._playback_active.get(sid, False)
+                    playback_age = time.monotonic() - self._playback_onset.get(
+                        sid, 0.0
+                    )
+                    in_echo_grace = playback_on and (
+                        playback_age < ECHO_GRACE_SECONDS
+                    )
+                    task_alive = (
                         self._current_tasks.get(sid) is not None
                         and not self._current_tasks[sid].done()
-                        and ctx.dialogue_state == DialogueState.INTERRUPTIBLE
                     )
+                    barge_in_pending = (
+                        playback_on
+                        and not in_echo_grace
+                        or (
+                            not playback_on
+                            and task_alive
+                            and ctx.dialogue_state
+                            == DialogueState.INTERRUPTIBLE
+                        )
+                    )
+                    if barge_in_pending:
+                        threshold = (
+                            self.interrupt_handler.speech_energy_threshold
+                        )
+                        target_frames = (
+                            self.interrupt_handler.consecutive_speech_frames
+                        )
+                        if playback_on:
+                            threshold = max(
+                                threshold,
+                                self._echo_floor.get(sid, 0.0)
+                                * ECHO_FLOOR_MARGIN,
+                            )
+                            target_frames = (
+                                self.interrupt_handler.playback_consecutive_speech_frames
+                            )
+                        barge_thresholds[sid] = threshold
+                        barge_frames[sid] = target_frames
+                        self.interrupt_handler.reset()
                     is_speaking = True
                     ctx.dialogue_state = DialogueState.LISTENING
                     silence_ms = 0.0
@@ -241,12 +304,67 @@ class StreamingPipeline:
                 else:
                     silence_ms = 0.0
                     speech_buffer.extend(chunk)
+                    energy = rms_energy(bytes(chunk)) / 32768.0
+                    playback_on = self._playback_active.get(sid, False)
+                    playback_age = time.monotonic() - self._playback_onset.get(
+                        sid, 0.0
+                    )
+                    in_echo_grace = playback_on and (
+                        playback_age < ECHO_GRACE_SECONDS
+                    )
+                    assistant_responding = (
+                        self._current_tasks.get(sid) is not None
+                        and not self._current_tasks[sid].done()
+                        and ctx.dialogue_state == DialogueState.INTERRUPTIBLE
+                    )
+                    if (
+                        not barge_in_pending
+                        and not in_echo_grace
+                        and assistant_responding
+                    ):
+                        threshold = (
+                            self.interrupt_handler.speech_energy_threshold
+                        )
+                        target_frames = (
+                            self.interrupt_handler.consecutive_speech_frames
+                        )
+                        if playback_on:
+                            threshold = max(
+                                threshold,
+                                self._echo_floor.get(sid, 0.0)
+                                * ECHO_FLOOR_MARGIN,
+                            )
+                            target_frames = (
+                                self.interrupt_handler.playback_consecutive_speech_frames
+                            )
+                        if energy > threshold:
+                            barge_in_pending = True
+                            barge_thresholds[sid] = threshold
+                            barge_frames[sid] = target_frames
+                            self.interrupt_handler.reset()
+                            logger.debug(
+                                f"barge-in candidate session={sid} energy={energy:.3f}"
+                                f" threshold={threshold:.3f}"
+                            )
                     if barge_in_pending:
-                        energy = rms_energy(bytes(chunk)) / 32768.0
+                        threshold = barge_thresholds.get(
+                            sid,
+                            self.interrupt_handler.speech_energy_threshold,
+                        )
+                        target_frames = barge_frames.get(
+                            sid,
+                            self.interrupt_handler.consecutive_speech_frames,
+                        )
                         if self.interrupt_handler.should_interrupt(
-                            energy, 0.0, True
+                            energy,
+                            0.0,
+                            True,
+                            threshold=threshold,
+                            target_frames=target_frames,
                         ):
                             barge_in_pending = False
+                            barge_thresholds.pop(sid, None)
+                            barge_frames.pop(sid, None)
                             await self.signal_interrupt(sid)
                             ctx.dialogue_state = DialogueState.LISTENING
                             await self._emit(
@@ -310,6 +428,8 @@ class StreamingPipeline:
                     if silence_ms >= adaptive_threshold:
                         is_speaking = False
                         barge_in_pending = False
+                        barge_thresholds.pop(sid, None)
+                        barge_frames.pop(sid, None)
                         self.interrupt_handler.reset()
                         audio_blob = bytes(speech_buffer)
                         speech_buffer.clear()
@@ -335,6 +455,8 @@ class StreamingPipeline:
         self._current_tasks[session_id] = asyncio.current_task()
         tts_worker: asyncio.Task | None = None
         bc_timer: asyncio.Task | None = None
+        stt_task: asyncio.Task | None = None
+        spec_task: asyncio.Task | None = None
 
         try:
             memory = self._memory(session_id)
@@ -434,11 +556,13 @@ class StreamingPipeline:
             tool_calls: list[dict[str, str]] = []
 
             async def push(priority: int, text: str) -> None:
+                text = sanitize_for_tts(text)
                 if not text.strip():
                     return
                 await text_queue.put((priority, next(seq), text))
 
             def push_nowait(priority: int, text: str) -> None:
+                text = sanitize_for_tts(text)
                 if not text.strip():
                     return
                 text_queue.put_nowait((priority, next(seq), text))
@@ -452,6 +576,7 @@ class StreamingPipeline:
             if used_speculation:
                 full = spec_full or ""
                 ctx.dialogue_state = DialogueState.INTERRUPTIBLE
+                await self._emit(PipelineEvent.LLM_TOKEN, full, session_id)
                 tool_calls = self._tool_registry.find_calls(full)
                 if not tool_calls:
                     for c in chunker.feed(full):
@@ -586,13 +711,15 @@ class StreamingPipeline:
                 await self._emit(PipelineEvent.TTS_DONE, session_id=session_id)
 
         except asyncio.CancelledError:
-            if tts_worker:
-                tts_worker.cancel()
-            if bc_timer:
-                bc_timer.cancel()
+            for child in (tts_worker, bc_timer, stt_task, spec_task):
+                if child:
+                    child.cancel()
             raise
         except Exception as e:
             logger.error(f"processing error session={session_id} error={e}")
+            for child in (tts_worker, bc_timer, stt_task, spec_task):
+                if child:
+                    child.cancel()
             await self._emit(PipelineEvent.ERROR, str(e), session_id)
         finally:
             if self._current_tasks.get(session_id) is asyncio.current_task():
@@ -636,38 +763,81 @@ class StreamingPipeline:
         """Consume text chunks from the priority queue and synthesize audio."""
         int_ev = self._int_event(session_id)
         sr = self.tts.sample_rate
+        total_bytes = 0
+        first_emit: float | None = None
 
         async def _one(text: str) -> AsyncGenerator[str, None]:
             yield text
 
-        while True:
-            try:
-                _, _, text = await asyncio.wait_for(
-                    text_queue.get(), timeout=0.2
-                )
-            except asyncio.TimeoutError:
+        try:
+            while True:
+                try:
+                    _, _, text = await asyncio.wait_for(
+                        text_queue.get(), timeout=0.2
+                    )
+                except asyncio.TimeoutError:
+                    if int_ev.is_set() or stop_tts.is_set():
+                        await self._drain_queue(text_queue)
+                        break
+                    continue
+
+                if text is None:
+                    break
                 if int_ev.is_set() or stop_tts.is_set():
                     await self._drain_queue(text_queue)
                     break
-                continue
 
-            if text is None:
-                break
-            if int_ev.is_set() or stop_tts.is_set():
-                await self._drain_queue(text_queue)
-                break
+                try:
+                    async for audio_chunk in self.tts.synthesize_stream(_one(text)):
+                        if int_ev.is_set() or stop_tts.is_set():
+                            break
+                        if isinstance(audio_chunk, bytes) and len(audio_chunk) > 0:
+                            if first_emit is None:
+                                first_emit = time.monotonic()
+                                self._playback_onset[session_id] = first_emit
+                                self._echo_floor[session_id] = 0.0
+                            total_bytes += len(audio_chunk)
+                            energy = rms_energy(audio_chunk) / 32768.0
+                            self._echo_floor[session_id] = max(
+                                self._echo_floor.get(session_id, 0.0), energy
+                            )
+                            self._playback_active[session_id] = True
+                            wav = self._pcm_to_wav(audio_chunk, sr)
+                            await self._emit(
+                                PipelineEvent.TTS_CHUNK, wav, session_id
+                            )
+                except Exception as e:
+                    logger.error(
+                        f"tts chunk error session={session_id} error={e}"
+                    )
+        finally:
+            if (
+                total_bytes > 0
+                and not int_ev.is_set()
+                and first_emit is not None
+            ):
+                self._schedule_playback_clear(
+                    session_id,
+                    first_emit + total_bytes / (sr * 2) - time.monotonic(),
+                )
 
+    def _schedule_playback_clear(self, session_id: str, delay: float) -> None:
+        """Mark the client playback window as over after the audio finishes."""
+        existing = self._playback_clear_tasks.get(session_id)
+        if existing and not existing.done():
+            existing.cancel()
+        delay = max(0.0, delay) + 0.5
+
+        async def _clear() -> None:
             try:
-                async for audio_chunk in self.tts.synthesize_stream(_one(text)):
-                    if int_ev.is_set() or stop_tts.is_set():
-                        break
-                    if isinstance(audio_chunk, bytes) and len(audio_chunk) > 0:
-                        wav = self._pcm_to_wav(audio_chunk, sr)
-                        await self._emit(
-                            PipelineEvent.TTS_CHUNK, wav, session_id
-                        )
-            except Exception as e:
-                logger.error(f"tts chunk error session={session_id} error={e}")
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                return
+            self._playback_active[session_id] = False
+            if self._playback_clear_tasks.get(session_id) is asyncio.current_task():
+                self._playback_clear_tasks.pop(session_id, None)
+
+        self._playback_clear_tasks[session_id] = asyncio.create_task(_clear())
 
     async def _partial_transcribe(
         self, audio_blob: bytes, session_id: str, ctx: ConversationContext

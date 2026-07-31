@@ -255,6 +255,11 @@ pip install --editable ".[all]"
 
 # 3. Start Ollama with a compatible model
 ollama pull qwen3:8b
+
+# Single-slot concurrency by default means rapid back-to-back questions while the
+# assistant is still speaking will queue on Ollama. For concurrent generations,
+# raise the per-model concurrency (systemd: set OLLAMA_NUM_PARALLEL in the unit):
+#   Environment="OLLAMA_NUM_PARALLEL=2"
 ollama serve &
 
 # 4. Run TASA server

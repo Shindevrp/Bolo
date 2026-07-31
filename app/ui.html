@@ -142,7 +142,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
       }
       dbg(_ac16000?'Audio 16kHz':'Audio fallback '+ac.sampleRate+'Hz');
     }
-    navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:true}})
+    navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}})
     .then(function(s){
       st=s;dbg('Mic ready');
       sc=ac.createMediaStreamSource(s);

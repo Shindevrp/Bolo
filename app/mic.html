@@ -61,7 +61,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:transparent;displ
   }
   function go(){
     dbg('Requesting mic...');
-    navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:true}})
+    navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}})
     .then(function(s){
       st=s;dbg('Mic granted');
       try{
