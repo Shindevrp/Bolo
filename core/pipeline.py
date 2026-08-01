@@ -131,6 +131,7 @@ class StreamingPipeline:
         self._prosody = ProsodySelector()
         self._emotion = emotion_classifier or EmotionClassifier(enabled=False)
         self._topic_trackers: dict[str, TopicTracker] = {}
+        self._topic_label_tasks: dict[str, asyncio.Task] = {}
         self.intent_classifier = IntentClassifier()
 
         self._latency = LatencyTracker()
@@ -202,6 +203,13 @@ class StreamingPipeline:
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+        for task in self._topic_label_tasks.values():
+            task.cancel()
+        if self._topic_label_tasks:
+            await asyncio.gather(
+                *self._topic_label_tasks.values(), return_exceptions=True
+            )
+        self._topic_label_tasks.clear()
         for task in self._playback_clear_tasks.values():
             task.cancel()
         self._playback_clear_tasks.clear()
@@ -256,6 +264,9 @@ class StreamingPipeline:
         self._last_fact_extract.pop(session_id, None)
         self._contexts.pop(session_id, None)
         self._topic_trackers.pop(session_id, None)
+        label_task = self._topic_label_tasks.pop(session_id, None)
+        if label_task and not label_task.done():
+            label_task.cancel()
         self._interrupt_events.pop(session_id, None)
         self._current_tasks.pop(session_id, None)
         self._playback_active.pop(session_id, None)
@@ -302,6 +313,10 @@ class StreamingPipeline:
             self._contexts[session_id] = ConversationContext()
         return self._contexts[session_id]
 
+    def context(self, session_id: str) -> ConversationContext:
+        """Public accessor for a session's live conversation context."""
+        return self._ctx(session_id)
+
     def _memory(self, session_id: str) -> SessionMemory | None:
         return self._memories.get(session_id)
 
@@ -312,6 +327,59 @@ class StreamingPipeline:
         if session_id not in self._topic_trackers:
             self._topic_trackers[session_id] = TopicTracker()
         return self._topic_trackers[session_id]
+
+    def _maybe_label_topic(self, session_id: str) -> None:
+        tracker = self._topic_tracker(session_id)
+        if not tracker.needs_label():
+            return
+        if session_id in self._topic_label_tasks:
+            return
+        start_turn = (
+            tracker.current.start_turn if tracker.current is not None else None
+        )
+        if start_turn is None:
+            return
+        self._topic_label_tasks[session_id] = asyncio.create_task(
+            self._label_current_topic(session_id, start_turn)
+        )
+
+    async def _label_current_topic(
+        self, session_id: str, start_turn: int
+    ) -> None:
+        tracker = self._topic_tracker(session_id)
+        try:
+            raw = tracker.topic
+            if not raw:
+                return
+            label_prompt = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You label conversation topics. Given a list of "
+                        "keywords, reply with only a short 1-4 word "
+                        "human-friendly label. No punctuation or explanation."
+                    ),
+                },
+                {"role": "user", "content": f"Keywords: {raw}"},
+            ]
+            label = ""
+            async for tok in self.llm.generate_stream(label_prompt):
+                if len(label) >= 60:
+                    break
+                label += tok
+            label = label.strip()
+            if label and tracker.current is not None:
+                if tracker.current.start_turn == start_turn:
+                    tracker.set_label(label)
+                    logger.debug(
+                        f"topic labeled session={session_id} label={label!r}"
+                    )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"topic labeling failed session={session_id}: {e}")
+        finally:
+            self._topic_label_tasks.pop(session_id, None)
 
     def _update_engagement_from_prosody(
         self, ctx: ConversationContext, prosody_result: dict | None
@@ -675,6 +743,7 @@ class StreamingPipeline:
             ctx.topic_shift = topic_change.shift
             ctx.topic = topic_change.topic
             ctx.topic_since_turn = self._topic_tracker(session_id).since_turn
+            self._maybe_label_topic(session_id)
             ctx.user_repeated = self._detect_repetition(
                 ctx.last_transcript, transcript
             )

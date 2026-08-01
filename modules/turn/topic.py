@@ -65,6 +65,9 @@ class TopicTracker:
             return None
         return self._label
 
+    def needs_label(self) -> bool:
+        return self.current is not None and self.label is None
+
     def set_label(self, label: str) -> None:
         """Attach a human label to the current topic (async/LLM upgrade)."""
         if self.current is not None and label:

@@ -13,6 +13,8 @@ from aiortc.mediastreams import AudioFrame, MediaStreamTrack
 
 from core.pipeline import StreamingPipeline, PipelineEvent
 from core.state import SessionState, DialogueState
+from app.session_registry import register as register_session
+from app.session_registry import unregister as unregister_session
 from modules.memory.session import SessionMemory
 from modules.memory.retrieval import RetrievalModule
 from utils.logger import get_logger
@@ -101,6 +103,7 @@ async def webrtc_signal(websocket: WebSocket):
     memory = SessionMemory()
     retrieval = RetrievalModule()
     pipeline.register_session(session_id, memory, retrieval)
+    register_session(session)
 
     async def pump_output():
         interrupted = False
@@ -127,6 +130,8 @@ async def webrtc_signal(websocket: WebSocket):
                 elif msg.event == PipelineEvent.FINAL_TRANSCRIPT:
                     interrupted = False
                     session.add_user_turn(str(msg.data))
+                    session.last_activity = time.time()
+                    session.update(pipeline.context(session_id))
                     await websocket.send_json({
                         "type": "transcript",
                         "text": str(msg.data),
@@ -275,5 +280,6 @@ async def webrtc_signal(websocket: WebSocket):
         pump_task.cancel()
         pipeline.unregister_session(session_id)
         _active_sessions.pop(session_id, None)
+        unregister_session(session_id)
         await pc.close()
         logger.info(f"session {session_id} cleaned up")

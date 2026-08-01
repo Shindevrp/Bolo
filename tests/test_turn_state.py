@@ -7,6 +7,7 @@ from tests.test_streaming import (
     FakeSTTText,
     FakeTTSStream,
     FakeVAD,
+    _is_label_call,
 )
 
 
@@ -15,6 +16,10 @@ class TrackingLLM:
         self.messages_log: list[list[dict[str, str]]] = []
 
     async def generate_stream(self, messages):
+        if _is_label_call(messages):
+            for token in ["Latency ", "tuning"]:
+                yield token
+            return
         self.messages_log.append(messages)
         for token in ["Hello ", "world."]:
             yield token

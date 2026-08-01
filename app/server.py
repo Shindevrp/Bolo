@@ -19,6 +19,7 @@ from app.routes.ws import router as ws_router
 from app.routes.chat import router as chat_router
 from app.routes.metrics import router as metrics_router
 from app.routes.webrtc import router as webrtc_router
+from app.routes.sessions import router as sessions_router
 from core.pipeline import StreamingPipeline
 from core.config import CoreConfig
 from utils.logger import get_logger
@@ -167,6 +168,7 @@ app.include_router(ws_router)
 app.include_router(chat_router)
 app.include_router(metrics_router)
 app.include_router(webrtc_router)
+app.include_router(sessions_router)
 
 
 @app.exception_handler(Exception)

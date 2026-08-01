@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from core.state import SessionState, DialogueState
@@ -51,3 +53,20 @@ class TestSessionState:
         for _ in range(5):
             s.add_user_turn("hello")
         assert s.engagement_score > 0.5
+
+    def test_topic_intent_propagation(self) -> None:
+        s = SessionState(session_id="test-1")
+        assert s.topic == ""
+        assert s.intent == "statement"
+
+        ctx = SimpleNamespace(topic="latency optimization", intent="question")
+        s.update(ctx)
+
+        assert s.topic == "latency optimization"
+        assert s.intent == "question"
+
+    def test_update_handles_blank_ctx(self) -> None:
+        s = SessionState(session_id="test-1")
+        s.update(SimpleNamespace(topic="", intent=""))
+        assert s.topic == ""
+        assert s.intent == ""

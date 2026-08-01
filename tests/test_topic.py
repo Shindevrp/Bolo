@@ -61,3 +61,18 @@ class TestTopicLabel:
         t.set_label("planning the birthday")
         t.update("fixing my laptop instead", 1)
         assert t.label is None
+
+    def test_needs_label_before_and_after(self) -> None:
+        t = TopicTracker()
+        assert not t.needs_label()
+        t.update("plan a birthday party", 0)
+        assert t.needs_label()
+        t.set_label("planning the birthday")
+        assert not t.needs_label()
+
+    def test_needs_label_after_shift(self) -> None:
+        t = TopicTracker()
+        t.update("plan a birthday party", 0)
+        t.set_label("planning the birthday")
+        t.update("fixing my laptop instead", 1)
+        assert t.needs_label()

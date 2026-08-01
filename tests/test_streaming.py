@@ -139,6 +139,16 @@ class FakeTTSStream:
         return b""
 
 
+def _is_label_call(messages) -> bool:
+    if not messages:
+        return False
+    first = messages[0]
+    return (
+        first.get("role") == "system"
+        and "label conversation topics" in first.get("content", "")
+    )
+
+
 class HangSTT:
     async def transcribe(self, audio_blob: bytes) -> str:
         await asyncio.Event().wait()
@@ -151,6 +161,10 @@ class TrackLLM:
         self.cancelled = 0
 
     async def generate_stream(self, messages):
+        if _is_label_call(messages):
+            if False:
+                yield ""
+            return
         self.started += 1
         try:
             await asyncio.Event().wait()
@@ -159,6 +173,16 @@ class TrackLLM:
             raise
         if False:
             yield ""
+
+
+class FakeLLMLabel:
+    def __init__(self) -> None:
+        self.calls: list[list[dict]] = []
+
+    async def generate_stream(self, messages):
+        self.calls.append(messages)
+        for token in ["Latency", " tuning"]:
+            yield token
 
 
 class TestSegmentCleanup:
@@ -183,6 +207,36 @@ class TestSegmentCleanup:
             assert "sess" not in p._current_tasks
 
         asyncio.run(run())
+
+
+class TestBackgroundTopicLabeling:
+    def test_labels_current_topic_in_background(self) -> None:
+        async def run() -> str | None:
+            llm = FakeLLMLabel()
+            p = StreamingPipeline(FakeSTT(), llm, FakeTTS(), FakeVAD())
+            tracker = p._topic_tracker("sess")
+            tracker.update("optimizing latency for streaming", 0)
+            p._maybe_label_topic("sess")
+            await asyncio.sleep(0.05)
+            return tracker.label
+
+        label = asyncio.run(run())
+        assert label == "Latency tuning"
+
+    def test_no_repeat_task_for_same_topic(self) -> None:
+        async def run() -> tuple[int, str | None]:
+            llm = FakeLLMLabel()
+            p = StreamingPipeline(FakeSTT(), llm, FakeTTS(), FakeVAD())
+            tracker = p._topic_tracker("sess")
+            tracker.update("optimizing latency for streaming", 0)
+            p._maybe_label_topic("sess")
+            p._maybe_label_topic("sess")
+            await asyncio.sleep(0.05)
+            return len(llm.calls), tracker.label
+
+        calls, label = asyncio.run(run())
+        assert calls == 1
+        assert label == "Latency tuning"
 
     def test_spec_reuse_emits_llm_token(self) -> None:
         async def run() -> None:
@@ -596,6 +650,10 @@ class FirstBlockThenStreamLLM:
         self.cancelled = 0
 
     async def generate_stream(self, messages):
+        if _is_label_call(messages):
+            for token in ["Latency ", "tuning"]:
+                yield token
+            return
         self.calls += 1
         if self.calls == 1:
             try:
