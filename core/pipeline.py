@@ -45,6 +45,18 @@ logger = get_logger("pipeline")
 ECHO_GRACE_SECONDS = 0.35
 ECHO_FLOOR_MARGIN = 1.5
 
+# Fixed pipeline frame: 128ms at 16k mono 16-bit. All incoming audio is
+# segmented into these frames so VAD/turn logic sees uniform windows and the
+# SileroVAD hidden state decays across trailing-silence frames (otherwise a
+# large silence chunk can be misclassified as speech and swallow the turn end).
+FRAME_BYTES = 4096
+
+# Energy floor (normalized 0-1) below which a frame is treated as silence even
+# if the VAD reports speech. Guards against the VAD RNN carrying its hidden
+# state over trailing-silence windows and never firing speech_end. Real piper
+# speech frames measure ~0.05-0.28 RMS; digital silence measures 0.0.
+SILENCE_ENERGY_FLOOR = 0.003
+
 
 class PipelineEvent(Enum):
     AUDIO_CHUNK = auto()
@@ -136,11 +148,13 @@ class StreamingPipeline:
         self._speaking: dict[str, bool] = {}
         self._last_spoken: dict[str, str] = {}
         self._speech_buffers: dict[str, bytearray] = {}
+        self._frame_buffers: dict[str, bytearray] = {}
         self._silence_ms: dict[str, float] = {}
         self._last_partial_time: dict[str, float] = {}
         self._barge_pending: dict[str, bool] = {}
         self._barge_thresholds: dict[str, float] = {}
         self._barge_frames: dict[str, int] = {}
+        self._low_energy_frames: dict[str, int] = {}
         self._interrupt_handlers: dict[str, InterruptHandler] = {}
         self._running = False
         self._contexts: dict[str, ConversationContext] = {}
@@ -169,11 +183,18 @@ class StreamingPipeline:
             self._interrupt_handlers[session_id] = handler
         return handler
 
+    def _on_pipeline_loop_done(self, task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            logger.exception(f"pipeline loop crashed: {exc!r}")
+
     async def start(self) -> None:
         self._running = True
-        self._tasks = [
-            asyncio.create_task(self._pipeline_loop(), name="pipeline"),
-        ]
+        loop_task = asyncio.create_task(self._pipeline_loop(), name="pipeline")
+        loop_task.add_done_callback(self._on_pipeline_loop_done)
+        self._tasks = [loop_task]
         logger.info("pipeline started")
 
     async def stop(self) -> None:
@@ -194,14 +215,20 @@ class StreamingPipeline:
         self._barge_pending.clear()
         self._barge_thresholds.clear()
         self._barge_frames.clear()
+        self._low_energy_frames.clear()
         self._interrupt_handlers.clear()
         logger.info("pipeline stopped")
 
     async def push_audio(self, chunk: bytes, session_id: str = "default") -> None:
         try:
-            await self._audio_queue.put(
-                PipelineMessage(PipelineEvent.AUDIO_CHUNK, chunk, session_id)
-            )
+            buf = self._frame_buffers.setdefault(session_id, bytearray())
+            buf.extend(chunk)
+            while len(buf) >= FRAME_BYTES:
+                frame = bytes(buf[:FRAME_BYTES])
+                del buf[:FRAME_BYTES]
+                await self._audio_queue.put(
+                    PipelineMessage(PipelineEvent.AUDIO_CHUNK, frame, session_id)
+                )
         except asyncio.QueueFull:
             logger.warning("audio queue full, dropping chunk")
 
@@ -236,11 +263,13 @@ class StreamingPipeline:
         self._echo_floor.pop(session_id, None)
         self._speaking.pop(session_id, None)
         self._speech_buffers.pop(session_id, None)
+        self._frame_buffers.pop(session_id, None)
         self._silence_ms.pop(session_id, None)
         self._last_partial_time.pop(session_id, None)
         self._barge_pending.pop(session_id, None)
         self._barge_thresholds.pop(session_id, None)
         self._barge_frames.pop(session_id, None)
+        self._low_energy_frames.pop(session_id, None)
         self._interrupt_handlers.pop(session_id, None)
         clear_task = self._playback_clear_tasks.pop(session_id, None)
         if clear_task and not clear_task.done():
@@ -304,9 +333,16 @@ class StreamingPipeline:
 
         while self._running:
             try:
+                get_start = time.monotonic()
                 msg = await self._audio_queue.get()
+                get_wait = time.monotonic() - get_start
             except asyncio.CancelledError:
                 break
+            if get_wait > 1.0:
+                logger.debug(
+                    f"loop get() waited {get_wait:.1f}s "
+                    f"(qsize={self._audio_queue.qsize()})"
+                )
             chunk = msg.data
             if not isinstance(chunk, bytes):
                 continue
@@ -322,6 +358,20 @@ class StreamingPipeline:
             except Exception as e:
                 logger.error(f"vad error: {e}")
                 continue
+
+            frame_energy = rms_energy(chunk) / 32768.0
+            if is_speech and frame_energy < SILENCE_ENERGY_FLOOR:
+                low_count = self._low_energy_frames.get(sid, 0) + 1
+                self._low_energy_frames[sid] = low_count
+                if low_count >= 2:
+                    is_speech = False
+            else:
+                self._low_energy_frames[sid] = 0
+
+            logger.debug(
+                f"loop sid={sid} chunk={chunk_count} nbytes={len(chunk)} "
+                f"is_speech={is_speech} speaking={is_speaking}"
+            )
 
             if is_speech:
                 if not is_speaking:
@@ -369,6 +419,7 @@ class StreamingPipeline:
                     self._speaking[sid] = True
                     ctx.dialogue_state = DialogueState.LISTENING
                     self._silence_ms[sid] = 0.0
+                    self._low_energy_frames[sid] = 0
                     self._speech_buffers[sid] = bytearray(chunk)
                     speech_buffer = self._speech_buffers[sid]
                     self._last_partial_time[sid] = time.time()

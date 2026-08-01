@@ -120,6 +120,15 @@ async def lifespan(app: FastAPI):
                 )
         except Exception as e:
             logger.warning(f"emotion warmup failed (non-critical): {e}")
+        # Warm up the shared retrieval encoder so it is never loaded on the
+        # audio hot path (loading it mid-session stalls the VAD loop).
+        try:
+            from modules.memory.vector_db import _get_encoder
+
+            await asyncio.to_thread(_get_encoder)
+            logger.info("retrieval encoder warmed up")
+        except Exception as e:
+            logger.warning(f"retrieval encoder warmup failed (non-critical): {e}")
         logger.info("pipeline initialized")
     except Exception as e:
         logger.error(f"pipeline init failed: {e}")
