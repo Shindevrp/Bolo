@@ -26,6 +26,7 @@ from modules.backchannel.generator import BackchannelGenerator
 from modules.backchannel.timing import BackchannelTiming
 from modules.memory.session import SessionMemory
 from modules.memory.retrieval import RetrievalModule
+from modules.memory.compression import ContextCompressor
 from modules.memory.facts import (
     EXTRACTOR_SYSTEM_PROMPT,
     Fact,
@@ -132,6 +133,10 @@ class StreamingPipeline:
         self._emotion = emotion_classifier or EmotionClassifier(enabled=False)
         self._topic_trackers: dict[str, TopicTracker] = {}
         self._topic_label_tasks: dict[str, asyncio.Task] = {}
+        self._compression_tasks: dict[str, asyncio.Task] = {}
+        self.compressor = ContextCompressor()
+        self.compress_at_tokens = 1500
+        self.compress_batch = 8
         self.intent_classifier = IntentClassifier()
 
         self._latency = LatencyTracker()
@@ -210,6 +215,13 @@ class StreamingPipeline:
                 *self._topic_label_tasks.values(), return_exceptions=True
             )
         self._topic_label_tasks.clear()
+        for task in self._compression_tasks.values():
+            task.cancel()
+        if self._compression_tasks:
+            await asyncio.gather(
+                *self._compression_tasks.values(), return_exceptions=True
+            )
+        self._compression_tasks.clear()
         for task in self._playback_clear_tasks.values():
             task.cancel()
         self._playback_clear_tasks.clear()
@@ -267,6 +279,9 @@ class StreamingPipeline:
         label_task = self._topic_label_tasks.pop(session_id, None)
         if label_task and not label_task.done():
             label_task.cancel()
+        compress_task = self._compression_tasks.pop(session_id, None)
+        if compress_task and not compress_task.done():
+            compress_task.cancel()
         self._interrupt_events.pop(session_id, None)
         self._current_tasks.pop(session_id, None)
         self._playback_active.pop(session_id, None)
@@ -342,6 +357,44 @@ class StreamingPipeline:
         self._topic_label_tasks[session_id] = asyncio.create_task(
             self._label_current_topic(session_id, start_turn)
         )
+
+    def _maybe_compress(self, session_id: str) -> None:
+        if session_id in self._compression_tasks:
+            return
+        memory = self._memory(session_id)
+        if not memory:
+            return
+        if memory.token_estimate() <= self.compress_at_tokens:
+            return
+        batch = memory.entries_snapshot_oldest(self.compress_batch)
+        if not batch:
+            return
+        self._compression_tasks[session_id] = asyncio.create_task(
+            self._compress_history(session_id, memory, batch)
+        )
+
+    async def _compress_history(
+        self,
+        session_id: str,
+        memory: SessionMemory,
+        batch: list,
+    ) -> None:
+        try:
+            new_summary = await self.compressor.compress(
+                self.llm, memory.summary, batch
+            )
+            if new_summary:
+                memory.fold_summary(new_summary, batch)
+                logger.debug(
+                    f"context compressed session={session_id}"
+                    f" turns={len(batch)} chars={len(new_summary)}"
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"context compression failed session={session_id}: {e}")
+        finally:
+            self._compression_tasks.pop(session_id, None)
 
     async def _label_current_topic(
         self, session_id: str, start_turn: int
@@ -1018,6 +1071,7 @@ class StreamingPipeline:
                         retrieval.add_to_long_term, full, ctx.topic
                     )
                 )
+            self._maybe_compress(session_id)
 
             if not int_ev.is_set():
                 ctx.dialogue_state = DialogueState.IDLE
@@ -1309,6 +1363,10 @@ class StreamingPipeline:
 
         if ctx.topic and ctx.turn_count > 0:
             system_prompt += f"\n\nCurrent topic: {ctx.topic}."
+        if memory and memory.summary:
+            system_prompt += (
+                f"\n\nConversation summary so far:\n{memory.summary}"
+            )
         if ctx.intent == "correction":
             system_prompt += (
                 "\n\nThe user just corrected you. Acknowledge the correction "
