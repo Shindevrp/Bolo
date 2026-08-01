@@ -48,6 +48,20 @@ class CoreConfig:
     vad_sample_rate: int = 16000
     silence_ms: float = 400.0
 
+    # Emotion classification
+    emotion_enabled: bool = field(
+        default_factory=lambda: os.getenv("TASA_EMOTION_ENABLED", "1") != "0"
+    )
+    emotion_model: str = field(
+        default_factory=lambda: os.getenv(
+            "TASA_EMOTION_MODEL",
+            "j-hartmann/emotion-english-distilroberta-base",
+        )
+    )
+    emotion_device: str | None = field(
+        default_factory=lambda: os.getenv("TASA_EMOTION_DEVICE", "cuda")
+    )
+
     # Pipeline
     audio_queue_size: int = 512
     output_queue_size: int = 512

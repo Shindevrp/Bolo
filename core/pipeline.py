@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -9,6 +10,8 @@ from typing import AsyncGenerator
 
 from modules.tts.chunker import TTSChunker
 from modules.tts.sanitize import sanitize_for_tts
+from modules.tts.prosody import ProsodySelector, classify_sentiment
+from modules.emotion.classifier import EmotionClassifier
 from providers.stt.base import STTProvider
 from providers.llm.base import LLMProvider
 from providers.tts.base import TTSProvider
@@ -21,6 +24,11 @@ from modules.backchannel.generator import BackchannelGenerator
 from modules.backchannel.timing import BackchannelTiming
 from modules.memory.session import SessionMemory
 from modules.memory.retrieval import RetrievalModule
+from modules.memory.facts import (
+    EXTRACTOR_SYSTEM_PROMPT,
+    Fact,
+    FactMemory,
+)
 from core.state import DialogueState
 from modules.dialogue.prompts import build_system_prompt
 from modules.metrics.latency import LatencyTracker
@@ -71,6 +79,9 @@ class ConversationContext:
     prosody_trajectory: str = "neutral"
     dialogue_state: DialogueState = DialogueState.IDLE
     query_complexity: str = "standard"
+    topic_shift: bool = False
+    user_sentiment: str = "neutral"
+    user_repeated: bool = False
 
 
 class StreamingPipeline:
@@ -86,6 +97,7 @@ class StreamingPipeline:
         turn_backchannel: TurnBackchannel | None = None,
         backchannel_generator: BackchannelGenerator | None = None,
         backchannel_timing: BackchannelTiming | None = None,
+        emotion_classifier: EmotionClassifier | None = None,
     ) -> None:
         self.stt = stt
         self.llm = llm
@@ -98,6 +110,8 @@ class StreamingPipeline:
             generator=backchannel_generator or BackchannelGenerator(),
             timing=backchannel_timing or BackchannelTiming(),
         )
+        self._prosody = ProsodySelector()
+        self._emotion = emotion_classifier or EmotionClassifier(enabled=False)
 
         self._latency = LatencyTracker()
         self._metrics = MetricsLogger()
@@ -111,15 +125,41 @@ class StreamingPipeline:
         self._playback_clear_tasks: dict[str, asyncio.Task] = {}
         self._playback_onset: dict[str, float] = {}
         self._echo_floor: dict[str, float] = {}
+        self._speaking: dict[str, bool] = {}
+        self._last_spoken: dict[str, str] = {}
+        self._speech_buffers: dict[str, bytearray] = {}
+        self._silence_ms: dict[str, float] = {}
+        self._last_partial_time: dict[str, float] = {}
+        self._barge_pending: dict[str, bool] = {}
+        self._barge_thresholds: dict[str, float] = {}
+        self._barge_frames: dict[str, int] = {}
+        self._interrupt_handlers: dict[str, InterruptHandler] = {}
         self._running = False
         self._contexts: dict[str, ConversationContext] = {}
         self._memories: dict[str, SessionMemory] = {}
         self._retrievals: dict[str, RetrievalModule] = {}
+        self._facts: dict[str, FactMemory] = {}
+        self._last_fact_extract: dict[str, float] = {}
+        self._facts_llm_enabled = True
+        self._facts_llm_timeout = 8.0
+        self._facts_min_interval = 30.0
 
     def _int_event(self, session_id: str) -> asyncio.Event:
         if session_id not in self._interrupt_events:
             self._interrupt_events[session_id] = asyncio.Event()
         return self._interrupt_events[session_id]
+
+    def _interrupt_handler(self, session_id: str) -> InterruptHandler:
+        handler = self._interrupt_handlers.get(session_id)
+        if handler is None:
+            handler = InterruptHandler(
+                speech_energy_threshold=self.interrupt_handler.speech_energy_threshold,
+                silence_confidence_threshold=self.interrupt_handler.silence_confidence_threshold,
+                consecutive_speech_frames=self.interrupt_handler.consecutive_speech_frames,
+                playback_consecutive_speech_frames=self.interrupt_handler.playback_consecutive_speech_frames,
+            )
+            self._interrupt_handlers[session_id] = handler
+        return handler
 
     async def start(self) -> None:
         self._running = True
@@ -139,6 +179,14 @@ class StreamingPipeline:
         self._playback_active.clear()
         self._playback_onset.clear()
         self._echo_floor.clear()
+        self._speaking.clear()
+        self._speech_buffers.clear()
+        self._silence_ms.clear()
+        self._last_partial_time.clear()
+        self._barge_pending.clear()
+        self._barge_thresholds.clear()
+        self._barge_frames.clear()
+        self._interrupt_handlers.clear()
         logger.info("pipeline stopped")
 
     async def push_audio(self, chunk: bytes, session_id: str = "default") -> None:
@@ -150,10 +198,15 @@ class StreamingPipeline:
             logger.warning("audio queue full, dropping chunk")
 
     def register_session(
-        self, session_id: str, memory: SessionMemory, retrieval: RetrievalModule
+        self,
+        session_id: str,
+        memory: SessionMemory,
+        retrieval: RetrievalModule,
+        facts: FactMemory | None = None,
     ) -> None:
         self._memories[session_id] = memory
         self._retrievals[session_id] = retrieval
+        self._facts[session_id] = facts or FactMemory()
         try:
             asyncio.create_task(
                 asyncio.to_thread(retrieval.warm_up)
@@ -164,12 +217,22 @@ class StreamingPipeline:
     def unregister_session(self, session_id: str) -> None:
         self._memories.pop(session_id, None)
         self._retrievals.pop(session_id, None)
+        self._facts.pop(session_id, None)
+        self._last_fact_extract.pop(session_id, None)
         self._contexts.pop(session_id, None)
         self._interrupt_events.pop(session_id, None)
         self._current_tasks.pop(session_id, None)
         self._playback_active.pop(session_id, None)
         self._playback_onset.pop(session_id, None)
         self._echo_floor.pop(session_id, None)
+        self._speaking.pop(session_id, None)
+        self._speech_buffers.pop(session_id, None)
+        self._silence_ms.pop(session_id, None)
+        self._last_partial_time.pop(session_id, None)
+        self._barge_pending.pop(session_id, None)
+        self._barge_thresholds.pop(session_id, None)
+        self._barge_frames.pop(session_id, None)
+        self._interrupt_handlers.pop(session_id, None)
         clear_task = self._playback_clear_tasks.pop(session_id, None)
         if clear_task and not clear_task.done():
             clear_task.cancel()
@@ -221,16 +284,9 @@ class StreamingPipeline:
             ctx.engagement = max(0.1, ctx.engagement - 0.01)
 
     async def _pipeline_loop(self) -> None:
-        speech_buffer = bytearray()
-        is_speaking = False
-        silence_ms = 0.0
         chunk_count = 0
         prosody_update_interval = 5
         partial_transcript_interval = 1.0
-        last_partial_time = 0.0
-        barge_in_pending = False
-        barge_thresholds: dict[str, float] = {}
-        barge_frames: dict[str, int] = {}
 
         while self._running:
             try:
@@ -244,6 +300,8 @@ class StreamingPipeline:
             sid = msg.session_id
             ctx = self._ctx(sid)
             chunk_count += 1
+            is_speaking = self._speaking.get(sid, False)
+            speech_buffer = self._speech_buffers.get(sid)
 
             try:
                 is_speech = self.vad.is_speech(chunk)
@@ -264,7 +322,7 @@ class StreamingPipeline:
                         self._current_tasks.get(sid) is not None
                         and not self._current_tasks[sid].done()
                     )
-                    barge_in_pending = (
+                    barge_pending = (
                         playback_on
                         and not in_echo_grace
                         or (
@@ -274,7 +332,8 @@ class StreamingPipeline:
                             == DialogueState.INTERRUPTIBLE
                         )
                     )
-                    if barge_in_pending:
+                    self._barge_pending[sid] = barge_pending
+                    if barge_pending:
                         threshold = (
                             self.interrupt_handler.speech_energy_threshold
                         )
@@ -290,19 +349,20 @@ class StreamingPipeline:
                             target_frames = (
                                 self.interrupt_handler.playback_consecutive_speech_frames
                             )
-                        barge_thresholds[sid] = threshold
-                        barge_frames[sid] = target_frames
-                        self.interrupt_handler.reset()
-                    is_speaking = True
+                        self._barge_thresholds[sid] = threshold
+                        self._barge_frames[sid] = target_frames
+                        self._interrupt_handler(sid).reset()
+                    self._speaking[sid] = True
                     ctx.dialogue_state = DialogueState.LISTENING
-                    silence_ms = 0.0
-                    speech_buffer = bytearray(chunk)
-                    last_partial_time = time.time()
+                    self._silence_ms[sid] = 0.0
+                    self._speech_buffers[sid] = bytearray(chunk)
+                    speech_buffer = self._speech_buffers[sid]
+                    self._last_partial_time[sid] = time.time()
                     self.turn_detector.reset()
                     self.vad.reset()
                     await self._emit(PipelineEvent.SPEECH_START, session_id=sid)
                 else:
-                    silence_ms = 0.0
+                    self._silence_ms[sid] = 0.0
                     speech_buffer.extend(chunk)
                     energy = rms_energy(bytes(chunk)) / 32768.0
                     playback_on = self._playback_active.get(sid, False)
@@ -318,7 +378,7 @@ class StreamingPipeline:
                         and ctx.dialogue_state == DialogueState.INTERRUPTIBLE
                     )
                     if (
-                        not barge_in_pending
+                        not self._barge_pending.get(sid, False)
                         and not in_echo_grace
                         and assistant_responding
                     ):
@@ -338,33 +398,34 @@ class StreamingPipeline:
                                 self.interrupt_handler.playback_consecutive_speech_frames
                             )
                         if energy > threshold:
-                            barge_in_pending = True
-                            barge_thresholds[sid] = threshold
-                            barge_frames[sid] = target_frames
-                            self.interrupt_handler.reset()
+                            self._barge_pending[sid] = True
+                            self._barge_thresholds[sid] = threshold
+                            self._barge_frames[sid] = target_frames
+                            self._interrupt_handler(sid).reset()
                             logger.debug(
                                 f"barge-in candidate session={sid} energy={energy:.3f}"
                                 f" threshold={threshold:.3f}"
                             )
-                    if barge_in_pending:
-                        threshold = barge_thresholds.get(
+                    if self._barge_pending.get(sid, False):
+                        handler = self._interrupt_handler(sid)
+                        threshold = self._barge_thresholds.get(
                             sid,
                             self.interrupt_handler.speech_energy_threshold,
                         )
-                        target_frames = barge_frames.get(
+                        target_frames = self._barge_frames.get(
                             sid,
                             self.interrupt_handler.consecutive_speech_frames,
                         )
-                        if self.interrupt_handler.should_interrupt(
+                        if handler.should_interrupt(
                             energy,
                             0.0,
                             True,
                             threshold=threshold,
                             target_frames=target_frames,
                         ):
-                            barge_in_pending = False
-                            barge_thresholds.pop(sid, None)
-                            barge_frames.pop(sid, None)
+                            self._barge_pending[sid] = False
+                            self._barge_thresholds.pop(sid, None)
+                            self._barge_frames.pop(sid, None)
                             await self.signal_interrupt(sid)
                             ctx.dialogue_state = DialogueState.LISTENING
                             await self._emit(
@@ -379,8 +440,11 @@ class StreamingPipeline:
                     )
 
                 now = time.time()
-                if now - last_partial_time >= partial_transcript_interval:
-                    last_partial_time = now
+                if (
+                    now - self._last_partial_time.get(sid, 0.0)
+                    >= partial_transcript_interval
+                ):
+                    self._last_partial_time[sid] = now
                     partial_blob = bytes(speech_buffer)
                     asyncio.create_task(
                         self._partial_transcribe(partial_blob, sid, ctx)
@@ -400,8 +464,12 @@ class StreamingPipeline:
             else:
                 if is_speaking:
                     speech_buffer.extend(chunk)
-                    silence_ms += len(chunk) / (self.vad.sample_rate * 2 / 1000)
-                    self.interrupt_handler.reset()
+                    silence_ms = (
+                        self._silence_ms.get(sid, 0.0)
+                        + len(chunk) / (self.vad.sample_rate * 2 / 1000)
+                    )
+                    self._silence_ms[sid] = silence_ms
+                    self._interrupt_handler(sid).reset()
 
                     turn_decision = self.turn_detector.process_chunk(chunk, False)
 
@@ -426,13 +494,13 @@ class StreamingPipeline:
                         adaptive_threshold = 200.0
 
                     if silence_ms >= adaptive_threshold:
-                        is_speaking = False
-                        barge_in_pending = False
-                        barge_thresholds.pop(sid, None)
-                        barge_frames.pop(sid, None)
-                        self.interrupt_handler.reset()
+                        self._speaking[sid] = False
+                        self._barge_pending[sid] = False
+                        self._barge_thresholds.pop(sid, None)
+                        self._barge_frames.pop(sid, None)
+                        self._interrupt_handler(sid).reset()
                         audio_blob = bytes(speech_buffer)
-                        speech_buffer.clear()
+                        self._speech_buffers[sid] = bytearray()
                         self.vad.reset()
                         self.turn_detector.reset()
 
@@ -447,9 +515,50 @@ class StreamingPipeline:
                             self._process_speech_segment(audio_blob, sid, ctx)
                         )
 
+    def _detect_topic_shift(self, prev: str | None, cur: str) -> bool:
+        if not prev or not cur:
+            return False
+        prev_words = {w for w in prev.lower().split() if len(w) > 3}
+        cur_words = {w for w in cur.lower().split() if len(w) > 3}
+        if not cur_words:
+            return False
+        overlap = len(prev_words & cur_words) / len(cur_words)
+        return overlap < 0.2
+
+    def _detect_repetition(self, prev: str | None, cur: str) -> bool:
+        if not prev or not cur:
+            return False
+        prev_words = {w for w in prev.lower().split() if len(w) > 3}
+        cur_words = {w for w in cur.lower().split() if len(w) > 3}
+        if len(cur_words) < 3:
+            return False
+        overlap = len(prev_words & cur_words) / len(cur_words)
+        return overlap >= 0.6
+
+    def _looks_like_echo(self, session_id: str, transcript: str) -> bool:
+        words = [w for w in transcript.lower().split() if len(w) > 2]
+        if len(words) < 3:
+            return False
+        last_words = {
+            w for w in self._last_spoken.get(session_id, "").lower().split()
+            if len(w) > 2
+        }
+        if not last_words:
+            return False
+        overlap = len(set(words) & last_words) / len(words)
+        return overlap >= 0.6
+
     async def _process_speech_segment(
         self, audio_blob: bytes, session_id: str, ctx: ConversationContext
     ) -> None:
+        prev = self._current_tasks.get(session_id)
+        if prev and not prev.done() and prev is not asyncio.current_task():
+            prev.cancel()
+            self._playback_active[session_id] = False
+            clear_task = self._playback_clear_tasks.pop(session_id, None)
+            if clear_task and not clear_task.done():
+                clear_task.cancel()
+            await self._emit(PipelineEvent.INTERRUPT, session_id=session_id)
         int_ev = self._int_event(session_id)
         int_ev.clear()
         self._current_tasks[session_id] = asyncio.current_task()
@@ -473,7 +582,8 @@ class StreamingPipeline:
 
             if partial and len(partial.split()) >= 2:
                 spec_messages = await self._build_messages(
-                    partial, ctx, memory, retrieval
+                    partial, ctx, memory, retrieval,
+                    facts=self._facts.get(session_id),
                 )
 
                 async def _spec_llm():
@@ -495,6 +605,28 @@ class StreamingPipeline:
                     spec_task.cancel()
                 return
 
+            if self._looks_like_echo(session_id, transcript):
+                logger.debug(
+                    f"dropped echo-looking transcript session={session_id}"
+                    f" transcript={transcript!r}"
+                )
+                if spec_task:
+                    spec_task.cancel()
+                return
+
+            ctx.topic_shift = self._detect_topic_shift(
+                ctx.last_transcript, transcript
+            )
+            ctx.user_repeated = self._detect_repetition(
+                ctx.last_transcript, transcript
+            )
+            ctx.user_sentiment = classify_sentiment(transcript)
+            emotion_task = asyncio.create_task(
+                self._emotion.classify_async(transcript)
+            )
+            # If we time out below and shield-cancel, swallow any late
+            # exception so it never surfaces as "exception never retrieved".
+            emotion_task.add_done_callback(lambda t: t.exception())
             ctx.last_transcript = transcript
             ctx.is_question = transcript.strip().endswith("?")
             self._log_latency("stt")
@@ -523,11 +655,18 @@ class StreamingPipeline:
                     spec_task.cancel()
 
                 messages = await self._build_messages(
-                    transcript, ctx, memory, retrieval
+                    transcript, ctx, memory, retrieval,
+                    facts=self._facts.get(session_id),
                 )
 
             if memory:
                 memory.add("user", transcript)
+
+            facts = self._facts.get(session_id)
+            if facts is not None:
+                facts.advance_turn()
+                facts.add_all(facts.extract(transcript))
+                self._schedule_llm_facts(session_id, transcript, facts)
 
             if int_ev.is_set():
                 return
@@ -548,24 +687,58 @@ class StreamingPipeline:
                 if int_ev.is_set():
                     return
 
+            # Let the emotion classifier finish concurrently (0.5s cap);
+            # the lexicon fallback already set above wins on timeout/error.
+            if emotion_task:
+                try:
+                    ctx.user_sentiment = await asyncio.wait_for(
+                        asyncio.shield(emotion_task),
+                        timeout=self._emotion.timeout,
+                    )
+                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                    pass
+
             # ---- Parallel LLM → chunker → priority queue → TTS worker ----
             chunker = TTSChunker()
             text_queue: asyncio.PriorityQueue = asyncio.PriorityQueue(maxsize=128)
             seq = itertools.count()
             stop_tts = asyncio.Event()
             tool_calls: list[dict[str, str]] = []
+            first_chunk = True
+
+            def _prosody_for(text: str):
+                nonlocal first_chunk
+                profile = self._prosody.select(
+                    text,
+                    trajectory=ctx.prosody_trajectory,
+                    engagement=ctx.engagement,
+                    turn_count=ctx.turn_count,
+                    topic_shift=ctx.topic_shift,
+                    first=first_chunk,
+                    responding_to_question=ctx.is_question,
+                    complexity=ctx.query_complexity,
+                    user_sentiment=ctx.user_sentiment,
+                    user_repeated=ctx.user_repeated,
+                    first_response=ctx.turn_count == 0,
+                )
+                first_chunk = False
+                return profile
 
             async def push(priority: int, text: str) -> None:
                 text = sanitize_for_tts(text)
                 if not text.strip():
                     return
-                await text_queue.put((priority, next(seq), text))
+                await text_queue.put(
+                    (priority, next(seq), text, _prosody_for(text))
+                )
 
             def push_nowait(priority: int, text: str) -> None:
                 text = sanitize_for_tts(text)
                 if not text.strip():
                     return
-                text_queue.put_nowait((priority, next(seq), text))
+                text_queue.put_nowait(
+                    (priority, next(seq), text, _prosody_for(text))
+                )
 
             tts_worker = asyncio.create_task(
                 self._tts_worker(text_queue, session_id, stop_tts)
@@ -677,8 +850,8 @@ class StreamingPipeline:
                         first_token = False
                     full += token
                     await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
-                    for c in chunker.feed(self._tool_registry.strip_calls(token)):
-                        await push(1, c)
+                    for c in chunker.feed(token):
+                        await push(1, self._tool_registry.strip_calls(c))
 
                 if int_ev.is_set():
                     return
@@ -694,7 +867,7 @@ class StreamingPipeline:
             await self._emit(PipelineEvent.LLM_DONE, full, session_id)
 
             # End-of-stream sentinel (lowest priority: drained last)
-            text_queue.put_nowait((2, next(seq), None))
+            text_queue.put_nowait((2, next(seq), None, None))
 
             if tts_worker:
                 await tts_worker
@@ -751,7 +924,7 @@ class StreamingPipeline:
             return
         text = self.turn_backchannel.generator.generate_thinking()
         if text:
-            text_queue.put_nowait((0, next(seq), text))
+            text_queue.put_nowait((0, next(seq), text, None))
             logger.debug(f"thinking backchannel session={session_id} text={text}")
 
     async def _tts_worker(
@@ -765,6 +938,7 @@ class StreamingPipeline:
         sr = self.tts.sample_rate
         total_bytes = 0
         first_emit: float | None = None
+        spoken: list[str] = []
 
         async def _one(text: str) -> AsyncGenerator[str, None]:
             yield text
@@ -772,7 +946,7 @@ class StreamingPipeline:
         try:
             while True:
                 try:
-                    _, _, text = await asyncio.wait_for(
+                    _, _, text, prosody = await asyncio.wait_for(
                         text_queue.get(), timeout=0.2
                     )
                 except asyncio.TimeoutError:
@@ -786,9 +960,12 @@ class StreamingPipeline:
                 if int_ev.is_set() or stop_tts.is_set():
                     await self._drain_queue(text_queue)
                     break
+                spoken.append(text)
 
                 try:
-                    async for audio_chunk in self.tts.synthesize_stream(_one(text)):
+                    async for audio_chunk in self.tts.synthesize_stream(
+                        _one(text), prosody=prosody
+                    ):
                         if int_ev.is_set() or stop_tts.is_set():
                             break
                         if isinstance(audio_chunk, bytes) and len(audio_chunk) > 0:
@@ -820,6 +997,8 @@ class StreamingPipeline:
                     session_id,
                     first_emit + total_bytes / (sr * 2) - time.monotonic(),
                 )
+            if not int_ev.is_set() and spoken:
+                self._last_spoken[session_id] = " ".join(spoken)
 
     def _schedule_playback_clear(self, session_id: str, delay: float) -> None:
         """Mark the client playback window as over after the audio finishes."""
@@ -874,12 +1053,82 @@ class StreamingPipeline:
 
         return "standard"
 
+    def _schedule_llm_facts(
+        self, session_id: str, transcript: str, facts: FactMemory
+    ) -> None:
+        """Fire-and-forget LLM fact extraction, rate-limited per session.
+
+        vLLM batches concurrent requests, so a background extraction call
+        never blocks the main turn. Guarded for LLM providers that lack a
+        non-streaming generate().
+        """
+        if not self._facts_llm_enabled or not hasattr(self.llm, "generate"):
+            return
+        if transcript.strip().endswith("?"):
+            return
+        now = time.monotonic()
+        if now - self._last_fact_extract.get(session_id, 0.0) < (
+            self._facts_min_interval
+        ):
+            return
+        self._last_fact_extract[session_id] = now
+        asyncio.create_task(
+            self._extract_facts_llm(session_id, transcript, facts)
+        )
+
+    async def _extract_facts_llm(
+        self, session_id: str, transcript: str, facts: FactMemory
+    ) -> None:
+        try:
+            raw = await asyncio.wait_for(
+                asyncio.shield(
+                    self.llm.generate(
+                        [
+                            {
+                                "role": "system",
+                                "content": EXTRACTOR_SYSTEM_PROMPT,
+                            },
+                            {"role": "user", "content": transcript},
+                        ]
+                    )
+                ),
+                timeout=self._facts_llm_timeout,
+            )
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+            for item in parsed or []:
+                key = str(item.get("key", "")).strip().lower()
+                value = str(item.get("value", "")).strip()
+                if not key or not value or len(value) > 60:
+                    continue
+                try:
+                    confidence = min(1.0, max(0.5, float(item.get("confidence", 0.8))))
+                except (TypeError, ValueError):
+                    confidence = 0.8
+                facts.add(
+                    Fact(
+                        key=key,
+                        value=value,
+                        category="personal",
+                        source_turn=facts.turn,
+                        confidence=confidence,
+                        source="llm",
+                    )
+                )
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            pass
+
     async def _build_messages(
         self,
         transcript: str,
         ctx: ConversationContext,
         memory: SessionMemory | None,
         retrieval: RetrievalModule | None,
+        facts: FactMemory | None = None,
     ) -> list[dict[str, str]]:
         has_context = False
         retrieved: list[str] = []
@@ -903,21 +1152,29 @@ class StreamingPipeline:
         if tool_block:
             system_prompt += tool_block
 
+        if facts is not None:
+            facts_block = facts.to_block()
+            if facts_block:
+                system_prompt += "\n\n" + facts_block
+
         messages: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
         ]
 
-        if has_context and retrieved:
-            context_block = "\n".join(
-                f"- {r}" for r in retrieved[:3]
-            )
-            messages.append({
-                "role": "system",
-                "content": f"Relevant context from earlier:\n{context_block}",
-            })
-
         if memory:
             history = memory.get_history(6)
+            history_lower = {e.content.strip().lower() for e in history}
+            if has_context and retrieved:
+                hits = [
+                    r for r in retrieved
+                    if r.strip().lower() not in history_lower
+                ][:3]
+                if hits:
+                    messages.append({
+                        "role": "system",
+                        "content": "Relevant context from earlier:\n"
+                        + "\n".join(f"- {h}" for h in hits),
+                    })
             for entry in history:
                 messages.append({
                     "role": entry.role,

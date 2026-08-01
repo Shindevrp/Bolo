@@ -56,11 +56,55 @@ class TestVectorDB:
         results = db.search("weather today", top_k=1)
         assert "weather" in results[0].lower()
 
+    def test_search_scored_returns_scores(self) -> None:
+        db = VectorDB(embedding_dim=4)
+
+        class FakeEncoder:
+            def encode(self, text, **kw):
+                import numpy as np
+                if "weather" in text.lower():
+                    return np.array([1, 0, 0, 0])
+                return np.array([0, 1, 0, 0])
+
+            def get_sentence_embedding_dimension(self):
+                return 4
+
+        db._encoder = FakeEncoder()
+        db.add("the weather is nice")
+        db.add("I like pizza")
+        scored = db.search_scored("weather today", top_k=2)
+        by_doc = {d: s for d, s in scored}
+        assert by_doc["the weather is nice"] == pytest.approx(1.0)
+        assert by_doc["I like pizza"] == pytest.approx(0.0)
+
 
 class TestRetrievalModule:
-    def test_retrieve_context(self) -> None:
+    def test_retrieve_context_no_recent_echo(self) -> None:
         rm = RetrievalModule()
         sm = SessionMemory()
         sm.add("user", "hello")
         ctx = rm.retrieve_context("hello", sm, top_k=1)
-        assert any("[Recent]" in c for c in ctx)
+        assert not any("[Recent]" in c for c in ctx)
+
+    def test_retrieve_context_score_and_dedup(self) -> None:
+        rm = RetrievalModule(min_score=0.5)
+        sm = SessionMemory()
+
+        class FakeEncoder:
+            def encode(self, text, **kw):
+                import numpy as np
+                if "weather" in text.lower():
+                    return np.array([1, 0, 0, 0])
+                return np.array([0, 1, 0, 0])
+
+            def get_sentence_embedding_dimension(self):
+                return 4
+
+        rm.vector_db._encoder = FakeEncoder()
+        rm.vector_db.add("the weather is nice")
+        rm.vector_db.add("I like pizza")
+        sm.add("user", "I like pizza")  # also in recent -> deduped
+        hits = rm.retrieve_context("weather today", sm, top_k=2)
+        assert all("pizza" not in h for h in hits)
+        assert len(hits) == 1
+        assert "weather" in hits[0].lower()
