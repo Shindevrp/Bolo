@@ -1,9 +1,8 @@
 <div align="center">
 <div style="width:100%; max-width:880px; margin:0 auto; border:1px solid #21262d; border-radius:18px; overflow:hidden; background:#0d1117;">
 <div style="height:4px; background:#58a6ff;"></div>
-<div style="padding:40px 28px 24px;">
-<div style="font-family:'Fira Code',ui-monospace,SFMono-Regular,monospace; font-size:52px; font-weight:700; letter-spacing:14px; padding-right:14px; color:#58a6ff; line-height:1.1;">TASA</div>
-<div style="font-family:'Fira Code',ui-monospace,monospace; font-size:14px; letter-spacing:6px; padding-right:6px; color:#8b949e; margin-top:6px;">TURN&middot;AWARE&middot;SPEECH&middot;AGENT</div>
+<div style="padding:32px 28px 20px;">
+<img src="assets/tasa-cover.svg" alt="TASA conversational speech loop: you speak, TASA understands and responds, you hear" style="width:100%; height:auto; max-width:900px; display:block; margin:0 auto;">
 <p style="font-size:17px; color:#c9d1d9; margin:22px auto 0; max-width:620px; line-height:1.6;">A real-time conversational AI voice agent that <b style="color:#79c0ff;">listens</b>, <b style="color:#79c0ff;">understands</b>, and <b style="color:#79c0ff;">responds</b> with human-like timing, awareness, and natural flow.</p>
 <p style="margin:26px auto 0; max-width:700px;">
 <a href="#architecture" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">architecture</a>
