@@ -1014,7 +1014,9 @@ class StreamingPipeline:
                 memory.add("assistant", full)
             if retrieval:
                 asyncio.create_task(
-                    asyncio.to_thread(retrieval.add_to_long_term, full)
+                    asyncio.to_thread(
+                        retrieval.add_to_long_term, full, ctx.topic
+                    )
                 )
 
             if not int_ev.is_set():
@@ -1269,10 +1271,20 @@ class StreamingPipeline:
         facts: FactMemory | None = None,
     ) -> list[dict[str, str]]:
         has_context = False
-        retrieved: list[str] = []
+        retrieved: list[tuple[str, str | None]] = []
 
         if retrieval and memory:
-            retrieved = retrieval.retrieve_context(transcript, memory, top_k=3)
+            if ctx.topic:
+                retrieved = retrieval.retrieve_context_with_topics(
+                    transcript, memory, top_k=3, topic=ctx.topic
+                )
+            else:
+                retrieved = [
+                    (doc, None)
+                    for doc in retrieval.retrieve_context(
+                        transcript, memory, top_k=3
+                    )
+                ]
             if retrieved:
                 has_context = True
 
@@ -1319,13 +1331,17 @@ class StreamingPipeline:
             if has_context and retrieved:
                 hits = [
                     r for r in retrieved
-                    if r.strip().lower() not in history_lower
+                    if r[0].strip().lower() not in history_lower
                 ][:3]
                 if hits:
+                    lines = []
+                    for doc, doc_topic in hits:
+                        prefix = f"[{doc_topic}] " if doc_topic else ""
+                        lines.append(f"- {prefix}{doc}")
                     messages.append({
                         "role": "system",
                         "content": "Relevant context from earlier:\n"
-                        + "\n".join(f"- {h}" for h in hits),
+                        + "\n".join(lines),
                     })
             for entry in history:
                 messages.append({
