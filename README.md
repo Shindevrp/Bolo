@@ -1,59 +1,34 @@
 <div align="center">
-
-<!-- ============================ COVER ============================ -->
-<div style="width:100%; max-width:880px; margin:0 auto; border:1px solid #21262d; border-radius:18px; overflow:hidden; background:linear-gradient(160deg, #0b1220 0%, #0d1117 45%, #141d2b 100%); box-shadow: 0 0 0 1px rgba(88,166,255,0.06), 0 24px 60px -24px rgba(1,4,9,0.8);">
-
-  <!-- top accent bar -->
-  <div style="height:4px; background:linear-gradient(90deg, #58a6ff, #bc8cff, #79c0ff);"></div>
-
-  <div style="padding: 44px 32px 30px;">
-
-    <!-- wordmark -->
-    <div style="font-family:'Fira Code',ui-monospace,SFMono-Regular,monospace; font-size:52px; font-weight:700; letter-spacing:14px; padding-right:14px; background:linear-gradient(120deg,#58a6ff 0%,#bc8cff 55%,#79c0ff 100%); -webkit-background-clip:text; background-clip:text; color:transparent; line-height:1.1;">TASA</div>
-
-    <!-- tagline -->
-    <div style="font-family:'Fira Code',ui-monospace,monospace; font-size:14px; letter-spacing:6px; padding-right:6px; color:#8b949e; margin-top:6px;">TURN&middot;AWARE&middot;SPEECH&middot;AGENT</div>
-
-    <!-- description -->
-    <p style="font-size:17px; color:#c9d1d9; margin:22px auto 0; max-width:620px; line-height:1.6;">
-      A real-time conversational AI voice agent that <b style="color:#79c0ff;">listens</b>, <b style="color:#79c0ff;">understands</b>, and <b style="color:#79c0ff;">responds</b> with human-like timing, awareness, and natural flow.
-    </p>
-
-    <!-- quick-nav pills -->
-    <div style="margin:26px auto 0; max-width:700px;">
-      <a href="#architecture" style="display:inline-block; margin:4px 4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#0d1117; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">architecture</a>
-      <a href="#features" style="display:inline-block; margin:4px 4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#0d1117; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">features</a>
-      <a href="#state-machine" style="display:inline-block; margin:4px 4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#0d1117; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">state-machine</a>
-      <a href="#stack" style="display:inline-block; margin:4px 4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#0d1117; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">stack</a>
-      <a href="#quick-start" style="display:inline-block; margin:4px 4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#0d1117; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">quick-start</a>
-      <a href="#pipeline" style="display:inline-block; margin:4px 4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#0d1117; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">data-flow</a>
-      <a href="#testing" style="display:inline-block; margin:4px 4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#0d1117; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">testing</a>
-      <a href="#api" style="display:inline-block; margin:4px 4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#0d1117; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">api</a>
-    </div>
-
-    <!-- pipeline chips -->
-    <div style="margin:22px auto 0; max-width:700px; font-family:'Fira Code',ui-monospace,monospace; font-size:12px;">
-      <span style="display:inline-block; margin:3px 3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">VAD</span>
-      <span style="display:inline-block; margin:3px 3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">STT</span>
-      <span style="display:inline-block; margin:3px 3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">TURN</span>
-      <span style="display:inline-block; margin:3px 3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">INTENT</span>
-      <span style="display:inline-block; margin:3px 3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">EMOTION</span>
-      <span style="display:inline-block; margin:3px 3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">LLM</span>
-      <span style="display:inline-block; margin:3px 3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">TTS</span>
-      <span style="display:inline-block; margin:3px 3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">MEMORY</span>
-      <span style="display:inline-block; margin:3px 3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">TOOLS</span>
-    </div>
-
-  </div>
-
-  <!-- bottom bar -->
-  <div style="padding:14px 32px; background:rgba(1,4,9,0.5); border-top:1px solid #21262d; font-family:'Fira Code',ui-monospace,monospace; font-size:12px; color:#8b949e;">
-    <span style="color:#58a6ff;">~600ms</span> first audio &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">&lt;2s</span> full response &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">179</span> tests passing &nbsp;&middot;&nbsp; barge-in &amp; backchannel native
-  </div>
-
+<div style="width:100%; max-width:880px; margin:0 auto; border:1px solid #21262d; border-radius:18px; overflow:hidden; background:#0d1117;">
+<div style="height:4px; background:#58a6ff;"></div>
+<div style="padding:40px 28px 24px;">
+<div style="font-family:'Fira Code',ui-monospace,SFMono-Regular,monospace; font-size:52px; font-weight:700; letter-spacing:14px; padding-right:14px; color:#58a6ff; line-height:1.1;">TASA</div>
+<div style="font-family:'Fira Code',ui-monospace,monospace; font-size:14px; letter-spacing:6px; padding-right:6px; color:#8b949e; margin-top:6px;">TURN&middot;AWARE&middot;SPEECH&middot;AGENT</div>
+<p style="font-size:17px; color:#c9d1d9; margin:22px auto 0; max-width:620px; line-height:1.6;">A real-time conversational AI voice agent that <b style="color:#79c0ff;">listens</b>, <b style="color:#79c0ff;">understands</b>, and <b style="color:#79c0ff;">responds</b> with human-like timing, awareness, and natural flow.</p>
+<p style="margin:26px auto 0; max-width:700px;">
+<a href="#architecture" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">architecture</a>
+<a href="#features" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">features</a>
+<a href="#state-machine" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">state-machine</a>
+<a href="#stack" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">stack</a>
+<a href="#quick-start" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">quick-start</a>
+<a href="#pipeline" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">data-flow</a>
+<a href="#testing" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">testing</a>
+<a href="#api" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">api</a>
+</p>
+<p style="margin:20px auto 0; max-width:700px; font-family:'Fira Code',ui-monospace,monospace; font-size:12px;">
+<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">VAD</span>
+<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">STT</span>
+<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">TURN</span>
+<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">INTENT</span>
+<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">EMOTION</span>
+<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">LLM</span>
+<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">TTS</span>
+<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">MEMORY</span>
+<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">TOOLS</span>
+</p>
 </div>
-<!-- ========================== /COVER ============================ -->
-
+<div style="padding:14px 28px; background:#010409; border-top:1px solid #21262d; font-family:'Fira Code',ui-monospace,monospace; font-size:12px; color:#8b949e;"><span style="color:#58a6ff;">~600ms</span> first audio &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">&lt;2s</span> full response &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">179</span> tests passing &nbsp;&middot;&nbsp; barge-in &amp; backchannel native</div>
+</div>
 </div>
 
 ---
@@ -113,7 +88,7 @@ flowchart TB
     end
 
     subgraph Speak["PHASE 3 — SPEAK (response delivery)"]
-        TOOL[Tool Executor<br/>{tool:name(args)} interrupts TTS]
+        TOOL["Tool Executor<br/>interrupts TTS on tool calls"]
         CHUNK[TTS Chunker<br/>sentence / clause aware]
         PROSODY[Prosody Selector<br/>per-utterance delivery profile]
         PQ[Priority Queue<br/>backchannels speak first]
@@ -163,7 +138,7 @@ flowchart TB
     Transport -->|audio| AQ
     AQ -->|sequential| SPK
 
-    LLMS -.->|{tool:...} detected| TOOL
+    LLMS -.->|tool call detected| TOOL
     TOOL -->|results → follow-up LLM| LLMS
     BARGE -.->|interrupt| LLMS
     BARGE -.->|interrupt| TTSW
@@ -533,7 +508,7 @@ sequenceDiagram
     P->>M: store user + assistant turns
     M->>M: token estimate > threshold -> compress oldest turns
     P->>R: store assistant answer (topic-tagged)
-    Note over U,X: First audio ~600ms typical, full response < 2s
+    Note over U,X: First audio ~600ms typical, full response under 2s
 ```
 
 ---
