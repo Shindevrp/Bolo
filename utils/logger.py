@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 from typing import Any
@@ -34,6 +35,9 @@ def get_logger(name: str = "TASA", level: int = logging.INFO) -> logging.Logger:
     logger = logging.getLogger(f"TASA.{name}" if name != "TASA" else "TASA")
     if logger.handlers:
         return logger
+    env_level = os.getenv("TASA_LOG_LEVEL", "").strip().upper()
+    if env_level == "DEBUG":
+        level = logging.DEBUG
     logger.setLevel(level)
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JSONFormatter())

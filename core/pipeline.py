@@ -19,11 +19,14 @@ from modules.vad.silero_vad import SileroVAD
 from modules.turn.detector import TurnDetector
 from modules.turn.interrupt import InterruptHandler
 from modules.turn.timing import TurnTiming
+from modules.turn.topic import TopicTracker
+from modules.turn.intent import IntentClassifier
 from modules.turn.backchannel import TurnBackchannel
 from modules.backchannel.generator import BackchannelGenerator
 from modules.backchannel.timing import BackchannelTiming
 from modules.memory.session import SessionMemory
 from modules.memory.retrieval import RetrievalModule
+from modules.memory.compression import ContextCompressor
 from modules.memory.facts import (
     EXTRACTOR_SYSTEM_PROMPT,
     Fact,
@@ -42,6 +45,18 @@ logger = get_logger("pipeline")
 
 ECHO_GRACE_SECONDS = 0.35
 ECHO_FLOOR_MARGIN = 1.5
+
+# Fixed pipeline frame: 128ms at 16k mono 16-bit. All incoming audio is
+# segmented into these frames so VAD/turn logic sees uniform windows and the
+# SileroVAD hidden state decays across trailing-silence frames (otherwise a
+# large silence chunk can be misclassified as speech and swallow the turn end).
+FRAME_BYTES = 4096
+
+# Energy floor (normalized 0-1) below which a frame is treated as silence even
+# if the VAD reports speech. Guards against the VAD RNN carrying its hidden
+# state over trailing-silence windows and never firing speech_end. Real piper
+# speech frames measure ~0.05-0.28 RMS; digital silence measures 0.0.
+SILENCE_ENERGY_FLOOR = 0.003
 
 
 class PipelineEvent(Enum):
@@ -80,6 +95,10 @@ class ConversationContext:
     dialogue_state: DialogueState = DialogueState.IDLE
     query_complexity: str = "standard"
     topic_shift: bool = False
+    topic: str = ""
+    topic_since_turn: int = 0
+    intent: str = "statement"
+    prev_intent: str = ""
     user_sentiment: str = "neutral"
     user_repeated: bool = False
 
@@ -112,6 +131,13 @@ class StreamingPipeline:
         )
         self._prosody = ProsodySelector()
         self._emotion = emotion_classifier or EmotionClassifier(enabled=False)
+        self._topic_trackers: dict[str, TopicTracker] = {}
+        self._topic_label_tasks: dict[str, asyncio.Task] = {}
+        self._compression_tasks: dict[str, asyncio.Task] = {}
+        self.compressor = ContextCompressor()
+        self.compress_at_tokens = 1500
+        self.compress_batch = 8
+        self.intent_classifier = IntentClassifier()
 
         self._latency = LatencyTracker()
         self._metrics = MetricsLogger()
@@ -128,11 +154,13 @@ class StreamingPipeline:
         self._speaking: dict[str, bool] = {}
         self._last_spoken: dict[str, str] = {}
         self._speech_buffers: dict[str, bytearray] = {}
+        self._frame_buffers: dict[str, bytearray] = {}
         self._silence_ms: dict[str, float] = {}
         self._last_partial_time: dict[str, float] = {}
         self._barge_pending: dict[str, bool] = {}
         self._barge_thresholds: dict[str, float] = {}
         self._barge_frames: dict[str, int] = {}
+        self._low_energy_frames: dict[str, int] = {}
         self._interrupt_handlers: dict[str, InterruptHandler] = {}
         self._running = False
         self._contexts: dict[str, ConversationContext] = {}
@@ -161,11 +189,18 @@ class StreamingPipeline:
             self._interrupt_handlers[session_id] = handler
         return handler
 
+    def _on_pipeline_loop_done(self, task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            logger.exception(f"pipeline loop crashed: {exc!r}")
+
     async def start(self) -> None:
         self._running = True
-        self._tasks = [
-            asyncio.create_task(self._pipeline_loop(), name="pipeline"),
-        ]
+        loop_task = asyncio.create_task(self._pipeline_loop(), name="pipeline")
+        loop_task.add_done_callback(self._on_pipeline_loop_done)
+        self._tasks = [loop_task]
         logger.info("pipeline started")
 
     async def stop(self) -> None:
@@ -173,6 +208,20 @@ class StreamingPipeline:
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+        for task in self._topic_label_tasks.values():
+            task.cancel()
+        if self._topic_label_tasks:
+            await asyncio.gather(
+                *self._topic_label_tasks.values(), return_exceptions=True
+            )
+        self._topic_label_tasks.clear()
+        for task in self._compression_tasks.values():
+            task.cancel()
+        if self._compression_tasks:
+            await asyncio.gather(
+                *self._compression_tasks.values(), return_exceptions=True
+            )
+        self._compression_tasks.clear()
         for task in self._playback_clear_tasks.values():
             task.cancel()
         self._playback_clear_tasks.clear()
@@ -186,14 +235,20 @@ class StreamingPipeline:
         self._barge_pending.clear()
         self._barge_thresholds.clear()
         self._barge_frames.clear()
+        self._low_energy_frames.clear()
         self._interrupt_handlers.clear()
         logger.info("pipeline stopped")
 
     async def push_audio(self, chunk: bytes, session_id: str = "default") -> None:
         try:
-            await self._audio_queue.put(
-                PipelineMessage(PipelineEvent.AUDIO_CHUNK, chunk, session_id)
-            )
+            buf = self._frame_buffers.setdefault(session_id, bytearray())
+            buf.extend(chunk)
+            while len(buf) >= FRAME_BYTES:
+                frame = bytes(buf[:FRAME_BYTES])
+                del buf[:FRAME_BYTES]
+                await self._audio_queue.put(
+                    PipelineMessage(PipelineEvent.AUDIO_CHUNK, frame, session_id)
+                )
         except asyncio.QueueFull:
             logger.warning("audio queue full, dropping chunk")
 
@@ -220,6 +275,13 @@ class StreamingPipeline:
         self._facts.pop(session_id, None)
         self._last_fact_extract.pop(session_id, None)
         self._contexts.pop(session_id, None)
+        self._topic_trackers.pop(session_id, None)
+        label_task = self._topic_label_tasks.pop(session_id, None)
+        if label_task and not label_task.done():
+            label_task.cancel()
+        compress_task = self._compression_tasks.pop(session_id, None)
+        if compress_task and not compress_task.done():
+            compress_task.cancel()
         self._interrupt_events.pop(session_id, None)
         self._current_tasks.pop(session_id, None)
         self._playback_active.pop(session_id, None)
@@ -227,11 +289,13 @@ class StreamingPipeline:
         self._echo_floor.pop(session_id, None)
         self._speaking.pop(session_id, None)
         self._speech_buffers.pop(session_id, None)
+        self._frame_buffers.pop(session_id, None)
         self._silence_ms.pop(session_id, None)
         self._last_partial_time.pop(session_id, None)
         self._barge_pending.pop(session_id, None)
         self._barge_thresholds.pop(session_id, None)
         self._barge_frames.pop(session_id, None)
+        self._low_energy_frames.pop(session_id, None)
         self._interrupt_handlers.pop(session_id, None)
         clear_task = self._playback_clear_tasks.pop(session_id, None)
         if clear_task and not clear_task.done():
@@ -264,11 +328,111 @@ class StreamingPipeline:
             self._contexts[session_id] = ConversationContext()
         return self._contexts[session_id]
 
+    def context(self, session_id: str) -> ConversationContext:
+        """Public accessor for a session's live conversation context."""
+        return self._ctx(session_id)
+
     def _memory(self, session_id: str) -> SessionMemory | None:
         return self._memories.get(session_id)
 
     def _retrieval(self, session_id: str) -> RetrievalModule | None:
         return self._retrievals.get(session_id)
+
+    def _topic_tracker(self, session_id: str) -> TopicTracker:
+        if session_id not in self._topic_trackers:
+            self._topic_trackers[session_id] = TopicTracker()
+        return self._topic_trackers[session_id]
+
+    def _maybe_label_topic(self, session_id: str) -> None:
+        tracker = self._topic_tracker(session_id)
+        if not tracker.needs_label():
+            return
+        if session_id in self._topic_label_tasks:
+            return
+        start_turn = (
+            tracker.current.start_turn if tracker.current is not None else None
+        )
+        if start_turn is None:
+            return
+        self._topic_label_tasks[session_id] = asyncio.create_task(
+            self._label_current_topic(session_id, start_turn)
+        )
+
+    def _maybe_compress(self, session_id: str) -> None:
+        if session_id in self._compression_tasks:
+            return
+        memory = self._memory(session_id)
+        if not memory:
+            return
+        if memory.token_estimate() <= self.compress_at_tokens:
+            return
+        batch = memory.entries_snapshot_oldest(self.compress_batch)
+        if not batch:
+            return
+        self._compression_tasks[session_id] = asyncio.create_task(
+            self._compress_history(session_id, memory, batch)
+        )
+
+    async def _compress_history(
+        self,
+        session_id: str,
+        memory: SessionMemory,
+        batch: list,
+    ) -> None:
+        try:
+            new_summary = await self.compressor.compress(
+                self.llm, memory.summary, batch
+            )
+            if new_summary:
+                memory.fold_summary(new_summary, batch)
+                logger.debug(
+                    f"context compressed session={session_id}"
+                    f" turns={len(batch)} chars={len(new_summary)}"
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"context compression failed session={session_id}: {e}")
+        finally:
+            self._compression_tasks.pop(session_id, None)
+
+    async def _label_current_topic(
+        self, session_id: str, start_turn: int
+    ) -> None:
+        tracker = self._topic_tracker(session_id)
+        try:
+            raw = tracker.topic
+            if not raw:
+                return
+            label_prompt = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You label conversation topics. Given a list of "
+                        "keywords, reply with only a short 1-4 word "
+                        "human-friendly label. No punctuation or explanation."
+                    ),
+                },
+                {"role": "user", "content": f"Keywords: {raw}"},
+            ]
+            label = ""
+            async for tok in self.llm.generate_stream(label_prompt):
+                if len(label) >= 60:
+                    break
+                label += tok
+            label = label.strip()
+            if label and tracker.current is not None:
+                if tracker.current.start_turn == start_turn:
+                    tracker.set_label(label)
+                    logger.debug(
+                        f"topic labeled session={session_id} label={label!r}"
+                    )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"topic labeling failed session={session_id}: {e}")
+        finally:
+            self._topic_label_tasks.pop(session_id, None)
 
     def _update_engagement_from_prosody(
         self, ctx: ConversationContext, prosody_result: dict | None
@@ -290,9 +454,16 @@ class StreamingPipeline:
 
         while self._running:
             try:
+                get_start = time.monotonic()
                 msg = await self._audio_queue.get()
+                get_wait = time.monotonic() - get_start
             except asyncio.CancelledError:
                 break
+            if get_wait > 1.0:
+                logger.debug(
+                    f"loop get() waited {get_wait:.1f}s "
+                    f"(qsize={self._audio_queue.qsize()})"
+                )
             chunk = msg.data
             if not isinstance(chunk, bytes):
                 continue
@@ -308,6 +479,20 @@ class StreamingPipeline:
             except Exception as e:
                 logger.error(f"vad error: {e}")
                 continue
+
+            frame_energy = rms_energy(chunk) / 32768.0
+            if is_speech and frame_energy < SILENCE_ENERGY_FLOOR:
+                low_count = self._low_energy_frames.get(sid, 0) + 1
+                self._low_energy_frames[sid] = low_count
+                if low_count >= 2:
+                    is_speech = False
+            else:
+                self._low_energy_frames[sid] = 0
+
+            logger.debug(
+                f"loop sid={sid} chunk={chunk_count} nbytes={len(chunk)} "
+                f"is_speech={is_speech} speaking={is_speaking}"
+            )
 
             if is_speech:
                 if not is_speaking:
@@ -355,6 +540,7 @@ class StreamingPipeline:
                     self._speaking[sid] = True
                     ctx.dialogue_state = DialogueState.LISTENING
                     self._silence_ms[sid] = 0.0
+                    self._low_energy_frames[sid] = 0
                     self._speech_buffers[sid] = bytearray(chunk)
                     speech_buffer = self._speech_buffers[sid]
                     self._last_partial_time[sid] = time.time()
@@ -515,16 +701,6 @@ class StreamingPipeline:
                             self._process_speech_segment(audio_blob, sid, ctx)
                         )
 
-    def _detect_topic_shift(self, prev: str | None, cur: str) -> bool:
-        if not prev or not cur:
-            return False
-        prev_words = {w for w in prev.lower().split() if len(w) > 3}
-        cur_words = {w for w in cur.lower().split() if len(w) > 3}
-        if not cur_words:
-            return False
-        overlap = len(prev_words & cur_words) / len(cur_words)
-        return overlap < 0.2
-
     def _detect_repetition(self, prev: str | None, cur: str) -> bool:
         if not prev or not cur:
             return False
@@ -614,13 +790,21 @@ class StreamingPipeline:
                     spec_task.cancel()
                 return
 
-            ctx.topic_shift = self._detect_topic_shift(
-                ctx.last_transcript, transcript
+            topic_change = self._topic_tracker(session_id).update(
+                transcript, ctx.turn_count
             )
+            ctx.topic_shift = topic_change.shift
+            ctx.topic = topic_change.topic
+            ctx.topic_since_turn = self._topic_tracker(session_id).since_turn
+            self._maybe_label_topic(session_id)
             ctx.user_repeated = self._detect_repetition(
                 ctx.last_transcript, transcript
             )
             ctx.user_sentiment = classify_sentiment(transcript)
+            ctx.prev_intent = ctx.intent
+            ctx.intent = self.intent_classifier.classify(
+                transcript, ctx.prev_intent
+            )
             emotion_task = asyncio.create_task(
                 self._emotion.classify_async(transcript)
             )
@@ -640,7 +824,13 @@ class StreamingPipeline:
 
             # Check if speculative LLM result can be reused
             used_speculation = False
-            if spec_task and partial and transcript.startswith(partial):
+            can_reuse_speculation = ctx.intent != "correction"
+            if (
+                can_reuse_speculation
+                and spec_task
+                and partial
+                and transcript.startswith(partial)
+            ):
                 try:
                     spec_full = await asyncio.wait_for(
                         asyncio.shield(spec_task), timeout=30.0
@@ -719,6 +909,7 @@ class StreamingPipeline:
                     complexity=ctx.query_complexity,
                     user_sentiment=ctx.user_sentiment,
                     user_repeated=ctx.user_repeated,
+                    intent=ctx.intent,
                     first_response=ctx.turn_count == 0,
                 )
                 first_chunk = False
@@ -876,8 +1067,11 @@ class StreamingPipeline:
                 memory.add("assistant", full)
             if retrieval:
                 asyncio.create_task(
-                    asyncio.to_thread(retrieval.add_to_long_term, full)
+                    asyncio.to_thread(
+                        retrieval.add_to_long_term, full, ctx.topic
+                    )
                 )
+            self._maybe_compress(session_id)
 
             if not int_ev.is_set():
                 ctx.dialogue_state = DialogueState.IDLE
@@ -1131,10 +1325,20 @@ class StreamingPipeline:
         facts: FactMemory | None = None,
     ) -> list[dict[str, str]]:
         has_context = False
-        retrieved: list[str] = []
+        retrieved: list[tuple[str, str | None]] = []
 
         if retrieval and memory:
-            retrieved = retrieval.retrieve_context(transcript, memory, top_k=3)
+            if ctx.topic:
+                retrieved = retrieval.retrieve_context_with_topics(
+                    transcript, memory, top_k=3, topic=ctx.topic
+                )
+            else:
+                retrieved = [
+                    (doc, None)
+                    for doc in retrieval.retrieve_context(
+                        transcript, memory, top_k=3
+                    )
+                ]
             if retrieved:
                 has_context = True
 
@@ -1157,6 +1361,24 @@ class StreamingPipeline:
             if facts_block:
                 system_prompt += "\n\n" + facts_block
 
+        if ctx.topic and ctx.turn_count > 0:
+            system_prompt += f"\n\nCurrent topic: {ctx.topic}."
+        if memory and memory.summary:
+            system_prompt += (
+                f"\n\nConversation summary so far:\n{memory.summary}"
+            )
+        if ctx.intent == "correction":
+            system_prompt += (
+                "\n\nThe user just corrected you. Acknowledge the correction "
+                "briefly, then respond directly to it. Do not repeat your "
+                "previous answer."
+            )
+        elif ctx.intent == "continuation":
+            system_prompt += (
+                "\n\nThe user is continuing their previous thought. Respond "
+                "fluidly without re-introducing the topic."
+            )
+
         messages: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
         ]
@@ -1167,13 +1389,17 @@ class StreamingPipeline:
             if has_context and retrieved:
                 hits = [
                     r for r in retrieved
-                    if r.strip().lower() not in history_lower
+                    if r[0].strip().lower() not in history_lower
                 ][:3]
                 if hits:
+                    lines = []
+                    for doc, doc_topic in hits:
+                        prefix = f"[{doc_topic}] " if doc_topic else ""
+                        lines.append(f"- {prefix}{doc}")
                     messages.append({
                         "role": "system",
                         "content": "Relevant context from earlier:\n"
-                        + "\n".join(f"- {h}" for h in hits),
+                        + "\n".join(lines),
                     })
             for entry in history:
                 messages.append({

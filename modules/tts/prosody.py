@@ -176,6 +176,7 @@ class ProsodySelector:
         complexity: str = "standard",
         user_sentiment: str = "neutral",
         user_repeated: bool = False,
+        intent: str = "statement",
         first_response: bool = False,
     ) -> ProsodyProfile:
         trimmed = text.strip()
@@ -185,6 +186,20 @@ class ProsodySelector:
         noise_w = base.noise_w
         silence = base.sentence_silence
         label = base.label
+
+        # Intent-driven delivery: corrections land softly and clearly,
+        # commands stay snappy, continuations keep the momentum.
+        if intent == "correction":
+            length *= 1.05
+            noise *= 0.9
+            label = f"{label}-measured"
+        elif intent == "command":
+            length *= 0.9
+            noise = min(0.6, noise + 0.05)
+            label = f"{label}-direct"
+        elif intent == "continuation":
+            length *= 0.95
+            label = f"{label}-flow"
 
         # B3: sentiment / emotion context.
         if user_sentiment == "negative":

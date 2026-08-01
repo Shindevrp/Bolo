@@ -35,6 +35,9 @@ class SileroVAD:
 
     def reset(self) -> None:
         self._state = None
+        reset_fn = getattr(self.model, "reset_states", None)
+        if callable(reset_fn):
+            reset_fn()
 
     def is_speech(self, audio_chunk: bytes) -> bool:
         audio = np.frombuffer(audio_chunk, dtype=np.int16).astype(np.float32) / 32768.0

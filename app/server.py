@@ -19,6 +19,7 @@ from app.routes.ws import router as ws_router
 from app.routes.chat import router as chat_router
 from app.routes.metrics import router as metrics_router
 from app.routes.webrtc import router as webrtc_router
+from app.routes.sessions import router as sessions_router
 from core.pipeline import StreamingPipeline
 from core.config import CoreConfig
 from utils.logger import get_logger
@@ -120,6 +121,15 @@ async def lifespan(app: FastAPI):
                 )
         except Exception as e:
             logger.warning(f"emotion warmup failed (non-critical): {e}")
+        # Warm up the shared retrieval encoder so it is never loaded on the
+        # audio hot path (loading it mid-session stalls the VAD loop).
+        try:
+            from modules.memory.vector_db import _get_encoder
+
+            await asyncio.to_thread(_get_encoder)
+            logger.info("retrieval encoder warmed up")
+        except Exception as e:
+            logger.warning(f"retrieval encoder warmup failed (non-critical): {e}")
         logger.info("pipeline initialized")
     except Exception as e:
         logger.error(f"pipeline init failed: {e}")
@@ -158,6 +168,7 @@ app.include_router(ws_router)
 app.include_router(chat_router)
 app.include_router(metrics_router)
 app.include_router(webrtc_router)
+app.include_router(sessions_router)
 
 
 @app.exception_handler(Exception)

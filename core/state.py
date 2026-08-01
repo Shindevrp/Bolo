@@ -56,7 +56,14 @@ class SessionState:
     total_user_turns: int = 0
     total_ai_turns: int = 0
     last_activity: float = 0.0
+    topic: str = ""
+    intent: str = "statement"
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def update(self, ctx: Any) -> None:
+        """Sync the session with a ConversationContext (topic/intent)."""
+        self.topic = getattr(ctx, "topic", "") or ""
+        self.intent = getattr(ctx, "intent", "") or ""
 
     def add_user_turn(self, text: str, confidence: float = 1.0) -> None:
         self.transcript.append(Turn("user", text, confidence))

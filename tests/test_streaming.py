@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from core.pipeline import StreamingPipeline, ConversationContext, PipelineEvent
+from core.pipeline import StreamingPipeline, ConversationContext, PipelineEvent, FRAME_BYTES
 from core.state import DialogueState
 from modules.backchannel.generator import BackchannelGenerator, BACKCHANNEL_CANDIDATES
 from modules.turn.timing import TurnTiming
@@ -139,6 +139,16 @@ class FakeTTSStream:
         return b""
 
 
+def _is_label_call(messages) -> bool:
+    if not messages:
+        return False
+    first = messages[0]
+    return (
+        first.get("role") == "system"
+        and "label conversation topics" in first.get("content", "")
+    )
+
+
 class HangSTT:
     async def transcribe(self, audio_blob: bytes) -> str:
         await asyncio.Event().wait()
@@ -151,6 +161,10 @@ class TrackLLM:
         self.cancelled = 0
 
     async def generate_stream(self, messages):
+        if _is_label_call(messages):
+            if False:
+                yield ""
+            return
         self.started += 1
         try:
             await asyncio.Event().wait()
@@ -159,6 +173,16 @@ class TrackLLM:
             raise
         if False:
             yield ""
+
+
+class FakeLLMLabel:
+    def __init__(self) -> None:
+        self.calls: list[list[dict]] = []
+
+    async def generate_stream(self, messages):
+        self.calls.append(messages)
+        for token in ["Latency", " tuning"]:
+            yield token
 
 
 class TestSegmentCleanup:
@@ -183,6 +207,36 @@ class TestSegmentCleanup:
             assert "sess" not in p._current_tasks
 
         asyncio.run(run())
+
+
+class TestBackgroundTopicLabeling:
+    def test_labels_current_topic_in_background(self) -> None:
+        async def run() -> str | None:
+            llm = FakeLLMLabel()
+            p = StreamingPipeline(FakeSTT(), llm, FakeTTS(), FakeVAD())
+            tracker = p._topic_tracker("sess")
+            tracker.update("optimizing latency for streaming", 0)
+            p._maybe_label_topic("sess")
+            await asyncio.sleep(0.05)
+            return tracker.label
+
+        label = asyncio.run(run())
+        assert label == "Latency tuning"
+
+    def test_no_repeat_task_for_same_topic(self) -> None:
+        async def run() -> tuple[int, str | None]:
+            llm = FakeLLMLabel()
+            p = StreamingPipeline(FakeSTT(), llm, FakeTTS(), FakeVAD())
+            tracker = p._topic_tracker("sess")
+            tracker.update("optimizing latency for streaming", 0)
+            p._maybe_label_topic("sess")
+            p._maybe_label_topic("sess")
+            await asyncio.sleep(0.05)
+            return len(llm.calls), tracker.label
+
+        calls, label = asyncio.run(run())
+        assert calls == 1
+        assert label == "Latency tuning"
 
     def test_spec_reuse_emits_llm_token(self) -> None:
         async def run() -> None:
@@ -292,11 +346,11 @@ class FakeVADTrue:
 
 async def _push_speech(p: StreamingPipeline, n: int) -> None:
     for _ in range(n):
-        await p.push_audio(b"\x7f" * 640, "sess")
+        await p.push_audio(b"\x7f" * FRAME_BYTES, "sess")
 
 
 def _const_energy_chunk(value: int) -> bytes:
-    return struct.pack("<h", value) * (640 // 2)
+    return struct.pack("<h", value) * (FRAME_BYTES // 2)
 
 
 class TestPlaybackActive:
@@ -596,6 +650,10 @@ class FirstBlockThenStreamLLM:
         self.cancelled = 0
 
     async def generate_stream(self, messages):
+        if _is_label_call(messages):
+            for token in ["Latency ", "tuning"]:
+                yield token
+            return
         self.calls += 1
         if self.calls == 1:
             try:
@@ -675,5 +733,92 @@ class TestInterruptDuringThinking:
                 msgs.append(p._output_queue.get_nowait().event)
             assert PipelineEvent.INTERRUPT in msgs
             assert "sess" not in p._current_tasks
+
+        asyncio.run(run())
+
+
+class TestFrameSegmentation:
+    def test_large_chunk_segmented_into_fixed_frames(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            await p.push_audio(b"\x00" * (FRAME_BYTES * 4 + 100), "sess")
+            frames = 0
+            while not p._audio_queue.empty():
+                msg = p._audio_queue.get_nowait()
+                assert len(msg.data) == FRAME_BYTES
+                frames += 1
+            assert frames == 4
+            assert len(p._frame_buffers["sess"]) == 100
+            await p.push_audio(b"\x00" * (FRAME_BYTES - 100), "sess")
+            assert p._audio_queue.qsize() == 1
+            msg = p._audio_queue.get_nowait()
+            assert len(msg.data) == FRAME_BYTES
+            assert len(p._frame_buffers["sess"]) == 0
+
+        asyncio.run(run())
+
+    def test_unregister_drops_partial_frame(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            await p.push_audio(b"\x00" * 2000, "sess")
+            assert len(p._frame_buffers["sess"]) == 2000
+            p.unregister_session("sess")
+            assert "sess" not in p._frame_buffers
+
+        asyncio.run(run())
+
+
+class TestLowEnergySilenceBackstop:
+    def test_swallowed_trailing_silence_ends_turn(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.vad = FakeVADTrue()
+            p._running = True
+            loop_task = asyncio.create_task(p._pipeline_loop())
+            seen: list[tuple[PipelineEvent, str]] = []
+
+            async def collect() -> None:
+                async for msg in p.output_stream():
+                    seen.append((msg.event, msg.session_id))
+
+            col_task = asyncio.create_task(collect())
+            for _ in range(4):
+                await p.push_audio(_const_energy_chunk(32639), "sess")
+            for _ in range(4):
+                await p.push_audio(b"\x00" * FRAME_BYTES, "sess")
+            await asyncio.sleep(0.3)
+            p._running = False
+            loop_task.cancel()
+            await asyncio.gather(loop_task, col_task, return_exceptions=True)
+
+            assert (PipelineEvent.SPEECH_START, "sess") in seen
+            assert (PipelineEvent.SPEECH_END, "sess") in seen
+            assert p._speaking.get("sess") is False
+
+        asyncio.run(run())
+
+    def test_real_energy_speech_not_flagged_as_silence(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.vad = FakeVADTrue()
+            p._running = True
+            loop_task = asyncio.create_task(p._pipeline_loop())
+            seen: list[tuple[PipelineEvent, str]] = []
+
+            async def collect() -> None:
+                async for msg in p.output_stream():
+                    seen.append((msg.event, msg.session_id))
+
+            col_task = asyncio.create_task(collect())
+            for _ in range(8):
+                await p.push_audio(_const_energy_chunk(32639), "sess")
+            await asyncio.sleep(0.3)
+            p._running = False
+            loop_task.cancel()
+            await asyncio.gather(loop_task, col_task, return_exceptions=True)
+
+            assert (PipelineEvent.SPEECH_START, "sess") in seen
+            assert (PipelineEvent.SPEECH_END, "sess") not in seen
+            assert p._speaking.get("sess") is True
 
         asyncio.run(run())
