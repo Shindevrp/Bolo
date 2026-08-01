@@ -19,6 +19,8 @@ from modules.vad.silero_vad import SileroVAD
 from modules.turn.detector import TurnDetector
 from modules.turn.interrupt import InterruptHandler
 from modules.turn.timing import TurnTiming
+from modules.turn.topic import TopicTracker
+from modules.turn.intent import IntentClassifier
 from modules.turn.backchannel import TurnBackchannel
 from modules.backchannel.generator import BackchannelGenerator
 from modules.backchannel.timing import BackchannelTiming
@@ -80,6 +82,10 @@ class ConversationContext:
     dialogue_state: DialogueState = DialogueState.IDLE
     query_complexity: str = "standard"
     topic_shift: bool = False
+    topic: str = ""
+    topic_since_turn: int = 0
+    intent: str = "statement"
+    prev_intent: str = ""
     user_sentiment: str = "neutral"
     user_repeated: bool = False
 
@@ -112,6 +118,8 @@ class StreamingPipeline:
         )
         self._prosody = ProsodySelector()
         self._emotion = emotion_classifier or EmotionClassifier(enabled=False)
+        self._topic_trackers: dict[str, TopicTracker] = {}
+        self.intent_classifier = IntentClassifier()
 
         self._latency = LatencyTracker()
         self._metrics = MetricsLogger()
@@ -220,6 +228,7 @@ class StreamingPipeline:
         self._facts.pop(session_id, None)
         self._last_fact_extract.pop(session_id, None)
         self._contexts.pop(session_id, None)
+        self._topic_trackers.pop(session_id, None)
         self._interrupt_events.pop(session_id, None)
         self._current_tasks.pop(session_id, None)
         self._playback_active.pop(session_id, None)
@@ -269,6 +278,11 @@ class StreamingPipeline:
 
     def _retrieval(self, session_id: str) -> RetrievalModule | None:
         return self._retrievals.get(session_id)
+
+    def _topic_tracker(self, session_id: str) -> TopicTracker:
+        if session_id not in self._topic_trackers:
+            self._topic_trackers[session_id] = TopicTracker()
+        return self._topic_trackers[session_id]
 
     def _update_engagement_from_prosody(
         self, ctx: ConversationContext, prosody_result: dict | None
@@ -515,16 +529,6 @@ class StreamingPipeline:
                             self._process_speech_segment(audio_blob, sid, ctx)
                         )
 
-    def _detect_topic_shift(self, prev: str | None, cur: str) -> bool:
-        if not prev or not cur:
-            return False
-        prev_words = {w for w in prev.lower().split() if len(w) > 3}
-        cur_words = {w for w in cur.lower().split() if len(w) > 3}
-        if not cur_words:
-            return False
-        overlap = len(prev_words & cur_words) / len(cur_words)
-        return overlap < 0.2
-
     def _detect_repetition(self, prev: str | None, cur: str) -> bool:
         if not prev or not cur:
             return False
@@ -614,13 +618,20 @@ class StreamingPipeline:
                     spec_task.cancel()
                 return
 
-            ctx.topic_shift = self._detect_topic_shift(
-                ctx.last_transcript, transcript
+            topic_change = self._topic_tracker(session_id).update(
+                transcript, ctx.turn_count
             )
+            ctx.topic_shift = topic_change.shift
+            ctx.topic = topic_change.topic
+            ctx.topic_since_turn = self._topic_tracker(session_id).since_turn
             ctx.user_repeated = self._detect_repetition(
                 ctx.last_transcript, transcript
             )
             ctx.user_sentiment = classify_sentiment(transcript)
+            ctx.prev_intent = ctx.intent
+            ctx.intent = self.intent_classifier.classify(
+                transcript, ctx.prev_intent
+            )
             emotion_task = asyncio.create_task(
                 self._emotion.classify_async(transcript)
             )
@@ -640,7 +651,13 @@ class StreamingPipeline:
 
             # Check if speculative LLM result can be reused
             used_speculation = False
-            if spec_task and partial and transcript.startswith(partial):
+            can_reuse_speculation = ctx.intent != "correction"
+            if (
+                can_reuse_speculation
+                and spec_task
+                and partial
+                and transcript.startswith(partial)
+            ):
                 try:
                     spec_full = await asyncio.wait_for(
                         asyncio.shield(spec_task), timeout=30.0
@@ -719,6 +736,7 @@ class StreamingPipeline:
                     complexity=ctx.query_complexity,
                     user_sentiment=ctx.user_sentiment,
                     user_repeated=ctx.user_repeated,
+                    intent=ctx.intent,
                     first_response=ctx.turn_count == 0,
                 )
                 first_chunk = False
@@ -1156,6 +1174,20 @@ class StreamingPipeline:
             facts_block = facts.to_block()
             if facts_block:
                 system_prompt += "\n\n" + facts_block
+
+        if ctx.topic and ctx.turn_count > 0:
+            system_prompt += f"\n\nCurrent topic: {ctx.topic}."
+        if ctx.intent == "correction":
+            system_prompt += (
+                "\n\nThe user just corrected you. Acknowledge the correction "
+                "briefly, then respond directly to it. Do not repeat your "
+                "previous answer."
+            )
+        elif ctx.intent == "continuation":
+            system_prompt += (
+                "\n\nThe user is continuing their previous thought. Respond "
+                "fluidly without re-introducing the topic."
+            )
 
         messages: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
