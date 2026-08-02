@@ -30,6 +30,23 @@ config = CoreConfig()
 pipeline: StreamingPipeline | None = None
 
 
+def _resolve_device(env_key: str) -> str:
+    """Resolve a TASA_*_DEVICE env var.
+
+    ``auto`` (the default when unset) picks cuda when available, otherwise cpu,
+    so the same image runs on GPU and CPU machines without manual config.
+    """
+    value = os.getenv(env_key, "").strip().lower()
+    if value in ("", "auto"):
+        try:
+            import torch
+
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            return "cpu"
+    return value
+
+
 def _build_providers():
     from providers.stt.faster_whisper_stt import FasterWhisperSTT
     from providers.llm.vllm_llm import VLLMProvider
@@ -45,8 +62,8 @@ def _build_providers():
 
     stt = FasterWhisperSTT(
         model_size=os.getenv("TASA_STT_MODEL", "tiny"),
-        device=os.getenv("TASA_STT_DEVICE", "cuda"),
-        compute_type=os.getenv("TASA_STT_COMPUTE", "float16"),
+        device=_resolve_device("TASA_STT_DEVICE"),
+        compute_type=os.getenv("TASA_STT_COMPUTE", "int8"),
     )
 
     llm = VLLMProvider(
@@ -63,7 +80,7 @@ def _build_providers():
 
     vad = SileroVAD(
         threshold=float(os.getenv("TASA_VAD_THRESHOLD", "0.5")),
-        device=os.getenv("TASA_VAD_DEVICE", "cuda"),
+        device=_resolve_device("TASA_VAD_DEVICE"),
     )
 
     turn_detector = TurnDetector()
@@ -78,7 +95,7 @@ def _build_providers():
     emotion = EmotionClassifier(
         enabled=config.emotion_enabled,
         model_name=config.emotion_model,
-        device=config.emotion_device,
+        device=_resolve_device("TASA_EMOTION_DEVICE"),
     )
 
     return (stt, llm, tts, vad, turn_detector, interrupt_handler, turn_timing,

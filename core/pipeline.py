@@ -748,6 +748,7 @@ class StreamingPipeline:
             retrieval = self._retrieval(session_id)
 
             # Start STT concurrently
+            eos_ts = time.perf_counter()
             stt_start = time.perf_counter()
             stt_task = asyncio.create_task(self.stt.transcribe(audio_blob))
 
@@ -932,7 +933,7 @@ class StreamingPipeline:
                 )
 
             tts_worker = asyncio.create_task(
-                self._tts_worker(text_queue, session_id, stop_tts)
+                self._tts_worker(text_queue, session_id, stop_tts, eos_ts)
             )
 
             full = ""
@@ -1029,7 +1030,7 @@ class StreamingPipeline:
                 full = ""
                 stop_tts = asyncio.Event()
                 tts_worker = asyncio.create_task(
-                    self._tts_worker(text_queue, session_id, stop_tts)
+                    self._tts_worker(text_queue, session_id, stop_tts, eos_ts)
                 )
 
                 llm_start = time.perf_counter()
@@ -1075,6 +1076,9 @@ class StreamingPipeline:
 
             if not int_ev.is_set():
                 ctx.dialogue_state = DialogueState.IDLE
+                if eos_ts is not None:
+                    self._latency.measure("tts_done", eos_ts)
+                    self._log_latency("tts_done")
                 await self._emit(PipelineEvent.TTS_DONE, session_id=session_id)
 
         except asyncio.CancelledError:
@@ -1126,6 +1130,7 @@ class StreamingPipeline:
         text_queue: asyncio.PriorityQueue,
         session_id: str,
         stop_tts: asyncio.Event,
+        eos_ts: float | None = None,
     ) -> None:
         """Consume text chunks from the priority queue and synthesize audio."""
         int_ev = self._int_event(session_id)
@@ -1165,6 +1170,9 @@ class StreamingPipeline:
                         if isinstance(audio_chunk, bytes) and len(audio_chunk) > 0:
                             if first_emit is None:
                                 first_emit = time.monotonic()
+                                if eos_ts is not None:
+                                    self._latency.measure("tts_first", eos_ts)
+                                    self._log_latency("tts_first")
                                 self._playback_onset[session_id] = first_emit
                                 self._echo_floor[session_id] = 0.0
                             total_bytes += len(audio_chunk)

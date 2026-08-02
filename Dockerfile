@@ -8,7 +8,8 @@ WORKDIR /build
 
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir ".[all]"
+    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchaudio && \
+    pip install --no-cache-dir ".[all,dashboard]"
 
 
 FROM python:3.12-slim
@@ -27,6 +28,7 @@ COPY core/ core/
 COPY modules/ modules/
 COPY providers/ providers/
 COPY utils/ utils/
+COPY streamlit_app.py ./
 
 ENV TASA_STT_MODEL=base
 ENV TASA_STT_DEVICE=cpu
