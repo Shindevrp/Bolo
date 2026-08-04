@@ -58,6 +58,14 @@ class TTSChunker:
         self._buffer = ""
 
     def _find_cut(self, text: str) -> int | None:
+        # Don't split inside a speaker tag [Name]
+        bracket_start = text.rfind("[")
+        if bracket_start >= 0:
+            bracket_end = text.find("]", bracket_start)
+            if bracket_end == -1:
+                # Incomplete tag — keep buffering
+                return None
+
         sent_end = self._find_sentence_end(text)
         if sent_end is not None and len(text[:sent_end].strip()) >= self.min_chars:
             return sent_end

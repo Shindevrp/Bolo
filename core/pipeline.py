@@ -34,6 +34,8 @@ from modules.memory.facts import (
 )
 from core.state import DialogueState
 from modules.dialogue.prompts import build_system_prompt
+from modules.speaker.coordinator import SpeakerCoordinator
+from modules.speaker.prompt_builder import build_multi_speaker_prompt
 from modules.metrics.latency import LatencyTracker
 from modules.metrics.logger import MetricsLogger
 from modules.tools.registry import ToolRegistry
@@ -101,6 +103,7 @@ class ConversationContext:
     prev_intent: str = ""
     user_sentiment: str = "neutral"
     user_repeated: bool = False
+    active_speaker: str = ""
 
 
 class StreamingPipeline:
@@ -117,6 +120,7 @@ class StreamingPipeline:
         backchannel_generator: BackchannelGenerator | None = None,
         backchannel_timing: BackchannelTiming | None = None,
         emotion_classifier: EmotionClassifier | None = None,
+        speaker_coordinator: SpeakerCoordinator | None = None,
     ) -> None:
         self.stt = stt
         self.llm = llm
@@ -138,6 +142,7 @@ class StreamingPipeline:
         self.compress_at_tokens = 1500
         self.compress_batch = 8
         self.intent_classifier = IntentClassifier()
+        self._speaker_coordinator = speaker_coordinator
 
         self._latency = LatencyTracker()
         self._metrics = MetricsLogger()
@@ -171,6 +176,7 @@ class StreamingPipeline:
         self._facts_llm_enabled = True
         self._facts_llm_timeout = 8.0
         self._facts_min_interval = 30.0
+        self._user_profiles: dict[str, Any] = {}
 
     def _int_event(self, session_id: str) -> asyncio.Event:
         if session_id not in self._interrupt_events:
@@ -896,6 +902,7 @@ class StreamingPipeline:
             stop_tts = asyncio.Event()
             tool_calls: list[dict[str, str]] = []
             first_chunk = True
+            current_speaker: str | None = None
 
             def _prosody_for(text: str):
                 nonlocal first_chunk
@@ -916,20 +923,20 @@ class StreamingPipeline:
                 first_chunk = False
                 return profile
 
-            async def push(priority: int, text: str) -> None:
+            async def push(priority: int, text: str, speaker: str | None = None) -> None:
                 text = sanitize_for_tts(text)
                 if not text.strip():
                     return
                 await text_queue.put(
-                    (priority, next(seq), text, _prosody_for(text))
+                    (priority, next(seq), text, _prosody_for(text), speaker)
                 )
 
-            def push_nowait(priority: int, text: str) -> None:
+            def push_nowait(priority: int, text: str, speaker: str | None = None) -> None:
                 text = sanitize_for_tts(text)
                 if not text.strip():
                     return
                 text_queue.put_nowait(
-                    (priority, next(seq), text, _prosody_for(text))
+                    (priority, next(seq), text, _prosody_for(text), speaker)
                 )
 
             tts_worker = asyncio.create_task(
@@ -1056,10 +1063,52 @@ class StreamingPipeline:
             if tail:
                 await push(1, self._tool_registry.strip_calls(tail))
 
+            # Multi-speaker: parse speaker tags and re-push with speaker routing
+            if self._speaker_coordinator and self._speaker_coordinator.enabled and full.strip():
+                # Stop the current chunker-based TTS and re-push with speaker info
+                stop_tts.set()
+                await self._drain_queue(text_queue)
+                chunker.reset()
+                if tts_worker:
+                    tts_worker.cancel()
+                    try:
+                        await tts_worker
+                    except (asyncio.CancelledError, Exception):
+                        pass
+
+                segments = self._speaker_coordinator.parse_response(full)
+                if segments:
+                    ctx.active_speaker = segments[0].speaker
+                    stop_tts = asyncio.Event()
+                    tts_worker = asyncio.create_task(
+                        self._tts_worker(text_queue, session_id, stop_tts, eos_ts)
+                    )
+
+                    for i, seg in enumerate(segments):
+                        if int_ev.is_set():
+                            break
+                        # Inter-speaker pause
+                        if i > 0:
+                            prev = segments[i - 1].speaker
+                            pause = self._speaker_coordinator.inter_speaker_pause(prev, seg.speaker)
+                            if pause > 0:
+                                await asyncio.sleep(pause)
+                                if int_ev.is_set():
+                                    break
+
+                        ctx.active_speaker = seg.speaker
+                        # Emit speaker event for UI
+                        await self._emit(
+                            PipelineEvent.LLM_TOKEN,
+                            f"[{seg.speaker}]",
+                            session_id,
+                        )
+                        await push(1, self._tool_registry.strip_calls(seg.text), speaker=seg.speaker)
+
             await self._emit(PipelineEvent.LLM_DONE, full, session_id)
 
             # End-of-stream sentinel (lowest priority: drained last)
-            text_queue.put_nowait((2, next(seq), None, None))
+            text_queue.put_nowait((2, next(seq), None, None, None))
 
             if tts_worker:
                 await tts_worker
@@ -1122,7 +1171,7 @@ class StreamingPipeline:
             return
         text = self.turn_backchannel.generator.generate_thinking()
         if text:
-            text_queue.put_nowait((0, next(seq), text, None))
+            text_queue.put_nowait((0, next(seq), text, None, None))
             logger.debug(f"thinking backchannel session={session_id} text={text}")
 
     async def _tts_worker(
@@ -1142,10 +1191,12 @@ class StreamingPipeline:
         async def _one(text: str) -> AsyncGenerator[str, None]:
             yield text
 
+        prev_speaker: str | None = None
+
         try:
             while True:
                 try:
-                    _, _, text, prosody = await asyncio.wait_for(
+                    _, _, text, prosody, speaker = await asyncio.wait_for(
                         text_queue.get(), timeout=0.2
                     )
                 except asyncio.TimeoutError:
@@ -1161,8 +1212,26 @@ class StreamingPipeline:
                     break
                 spoken.append(text)
 
+                # Inter-speaker pause (small natural gap when switching voices)
+                if speaker and prev_speaker and speaker != prev_speaker:
+                    pause_ms = 300
+                    wav_silence = self._pcm_to_wav(
+                        b"\x00\x00" * int(sr * pause_ms / 1000), sr
+                    )
+                    await self._emit(
+                        PipelineEvent.TTS_CHUNK, wav_silence, session_id
+                    )
+                prev_speaker = speaker
+
                 try:
-                    async for audio_chunk in self.tts.synthesize_stream(
+                    # Route to the correct speaker voice
+                    tts = self.tts
+                    if hasattr(tts, "get_voice") and speaker:
+                        voice = tts.get_voice(speaker)
+                        if voice:
+                            tts = voice
+
+                    async for audio_chunk in tts.synthesize_stream(
                         _one(text), prosody=prosody
                     ):
                         if int_ev.is_set() or stop_tts.is_set():
@@ -1358,7 +1427,17 @@ class StreamingPipeline:
             turn_count=ctx.turn_count,
             has_context=has_context,
             complexity=complexity,
+            user_profile_block=self._user_profiles.get(session_id, ""),
         )
+
+        # Multi-speaker: prepend speaker personas and rules
+        if self._speaker_coordinator and self._speaker_coordinator.enabled:
+            multi_block = build_multi_speaker_prompt(
+                list(self._speaker_coordinator.speakers.values()),
+                lead_speaker=self._speaker_coordinator.last_speaker,
+            )
+            if multi_block:
+                system_prompt = multi_block + "\n\n" + system_prompt
 
         tool_block = self._tool_registry.system_prompt_block()
         if tool_block:

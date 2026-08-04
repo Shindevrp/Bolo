@@ -12,6 +12,7 @@ class ToolSpec:
     description: str
     parameters: dict[str, Any]
     handler: Callable[..., str | Coroutine[Any, Any, str]]
+    proactive_hint: str = ""
 
 
 TOOL_CALL_RE = r"\{tool:(\w+)\(([^}]*)\)\}"
@@ -34,11 +35,20 @@ class ToolRegistry:
         if not self._tools:
             return ""
         names = ", ".join(sorted(self._tools.keys()))
-        return (
-            f"\nYou have access to tools: {{{names}}}. "
-            f"Use format: {{tool:name(args)}}. "
-            f"Only use them if explicitly asked."
-        )
+        lines = [
+            f"\nYou have access to tools: {{{names}}}.",
+            "Use format: {tool:name(args)}.",
+            "Use tools proactively when relevant — don't wait to be asked.",
+        ]
+        hints = [
+            f"- {t.proactive_hint}"
+            for t in self._tools.values()
+            if t.proactive_hint
+        ]
+        if hints:
+            lines.append("When to use tools:")
+            lines.extend(hints)
+        return "\n".join(lines)
 
     def find_calls(self, text: str) -> list[dict[str, str]]:
         calls = []

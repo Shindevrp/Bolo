@@ -77,9 +77,16 @@ async def audio_websocket(websocket: WebSocket):
 
                 elif msg.event == PipelineEvent.LLM_TOKEN:
                     session.set_state(DialogueState.INTERRUPTIBLE)
+                    token = str(msg.data)
+                    # Check if this is a speaker tag like [Sh] or [Ti]
+                    is_speaker_tag = (
+                        token.startswith("[") and token.endswith("]")
+                        and len(token) < 20
+                    )
                     await websocket.send_json({
                         "type": "llm_token",
-                        "token": str(msg.data),
+                        "token": token,
+                        "speaker": token.strip("[]") if is_speaker_tag else "",
                     })
 
                 elif msg.event == PipelineEvent.LLM_DONE:

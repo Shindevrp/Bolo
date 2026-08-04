@@ -50,7 +50,7 @@ def _resolve_device(env_key: str) -> str:
 def _build_providers():
     from providers.stt.faster_whisper_stt import FasterWhisperSTT
     from providers.llm.vllm_llm import VLLMProvider
-    from providers.tts.piper_tts import PiperTTS
+    from providers.tts.piper_tts import PiperTTS, PiperMultiVoice
     from modules.vad.silero_vad import SileroVAD
     from modules.turn.detector import TurnDetector
     from modules.turn.interrupt import InterruptHandler
@@ -59,6 +59,8 @@ def _build_providers():
     from modules.backchannel.generator import BackchannelGenerator
     from modules.backchannel.timing import BackchannelTiming
     from modules.emotion.classifier import EmotionClassifier
+    from modules.speaker.profile import SpeakerProfile
+    from modules.speaker.coordinator import SpeakerCoordinator
 
     stt = FasterWhisperSTT(
         model_size=os.getenv("TASA_STT_MODEL", "tiny"),
@@ -71,12 +73,37 @@ def _build_providers():
         model=os.getenv("TASA_LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct-AWQ"),
     )
 
-    tts = PiperTTS(
-        model_path=os.getenv(
-            "TASA_TTS_MODEL",
-            str(Path(__file__).parent.parent / "models" / "en_US-lessac-medium.onnx"),
-        ),
-    )
+    # Build TTS: multi-speaker or single voice
+    speaker_coordinator = None
+    if config.multi_speaker_enabled:
+        s1 = SpeakerProfile(
+            name=config.speaker_1_name,
+            voice_model_path=config.speaker_1_voice,
+            personality=config.speaker_1_personality,
+            speaking_style=config.speaker_1_style,
+            color="#3B82F6",
+        )
+        s2 = SpeakerProfile(
+            name=config.speaker_2_name,
+            voice_model_path=config.speaker_2_voice,
+            personality=config.speaker_2_personality,
+            speaking_style=config.speaker_2_style,
+            color="#10B981",
+        )
+        tts_1 = PiperTTS(model_path=s1.voice_model_path)
+        tts_2 = PiperTTS(model_path=s2.voice_model_path)
+        tts = PiperMultiVoice(voices={s1.name: tts_1, s2.name: tts_2})
+        speaker_coordinator = SpeakerCoordinator([s1, s2])
+        logger.info(
+            f"multi-speaker enabled: {s1.name} + {s2.name}"
+        )
+    else:
+        tts = PiperTTS(
+            model_path=os.getenv(
+                "TASA_TTS_MODEL",
+                str(Path(__file__).parent.parent / "models" / "en_US-lessac-medium.onnx"),
+            ),
+        )
 
     vad = SileroVAD(
         threshold=float(os.getenv("TASA_VAD_THRESHOLD", "0.5")),
@@ -99,7 +126,8 @@ def _build_providers():
     )
 
     return (stt, llm, tts, vad, turn_detector, interrupt_handler, turn_timing,
-            turn_backchannel, backchannel_gen, backchannel_timing, emotion)
+            turn_backchannel, backchannel_gen, backchannel_timing, emotion,
+            speaker_coordinator)
 
 
 @asynccontextmanager
@@ -107,7 +135,8 @@ async def lifespan(app: FastAPI):
     global pipeline
 
     try:
-        (stt, llm, tts, vad, td, ih, tt, tbc, bcg, bct, emotion) = (
+        (stt, llm, tts, vad, td, ih, tt, tbc, bcg, bct, emotion,
+         speaker_coordinator) = (
             _build_providers()
         )
         pipeline = StreamingPipeline(
@@ -116,6 +145,7 @@ async def lifespan(app: FastAPI):
             turn_timing=tt, turn_backchannel=tbc,
             backchannel_generator=bcg, backchannel_timing=bct,
             emotion_classifier=emotion,
+            speaker_coordinator=speaker_coordinator,
         )
         app.state.pipeline = pipeline
         app.state.start_time = time.time()

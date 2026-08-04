@@ -19,6 +19,47 @@ from modules.tts.prosody import (
 )
 
 
+class PiperMultiVoice(TTSProvider):
+    """Wraps multiple PiperTTS instances, one per speaker voice."""
+
+    def __init__(self, voices: dict[str, PiperTTS]) -> None:
+        self._voices = voices
+        self._default = next(iter(voices.values())) if voices else None
+
+    @property
+    def sample_rate(self) -> int:
+        if self._default:
+            return self._default.sample_rate
+        return 22050
+
+    def get_voice(self, speaker: str) -> PiperTTS | None:
+        return self._voices.get(speaker)
+
+    def speaker_names(self) -> list[str]:
+        return list(self._voices.keys())
+
+    async def synthesize_stream(
+        self,
+        text_chunks: AsyncGenerator[str, None],
+        prosody: ProsodyProfile | None = None,
+        speaker: str | None = None,
+    ) -> AsyncGenerator[bytes, None]:
+        tts = self._voices.get(speaker) if speaker else self._default
+        if tts is None:
+            return
+        async for chunk in tts.synthesize_stream(text_chunks, prosody=prosody):
+            yield chunk
+
+    async def synthesize(
+        self, text: str, prosody: ProsodyProfile | None = None,
+        speaker: str | None = None,
+    ) -> bytes:
+        tts = self._voices.get(speaker) if speaker else self._default
+        if tts is None:
+            return b""
+        return await tts.synthesize(text, prosody=prosody)
+
+
 class PiperTTS(TTSProvider):
     def __init__(
         self,
