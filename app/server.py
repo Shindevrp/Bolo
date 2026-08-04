@@ -76,6 +76,8 @@ def _build_providers():
     # Build TTS: multi-speaker or single voice
     speaker_coordinator = None
     if config.multi_speaker_enabled:
+        from modules.speaker.interrupt_policy import InterruptPolicy
+
         s1 = SpeakerProfile(
             name=config.speaker_1_name,
             voice_model_path=config.speaker_1_voice,
@@ -93,9 +95,21 @@ def _build_providers():
         tts_1 = PiperTTS(model_path=s1.voice_model_path)
         tts_2 = PiperTTS(model_path=s2.voice_model_path)
         tts = PiperMultiVoice(voices={s1.name: tts_1, s2.name: tts_2})
-        speaker_coordinator = SpeakerCoordinator([s1, s2])
+
+        interrupt_policy = InterruptPolicy(
+            urgency_threshold=config.interrupt_urgency_threshold,
+            max_consecutive_turns=config.max_consecutive_turns,
+            interrupt_mode=config.interrupt_mode,
+        )
+        speaker_coordinator = SpeakerCoordinator(
+            [s1, s2],
+            interrupt_policy=interrupt_policy,
+            overlap_ms=config.overlap_ms,
+        )
         logger.info(
-            f"multi-speaker enabled: {s1.name} + {s2.name}"
+            f"multi-speaker enabled: {s1.name} + {s2.name} "
+            f"interrupt_mode={config.interrupt_mode} "
+            f"overlap={config.overlap_ms}ms"
         )
     else:
         tts = PiperTTS(

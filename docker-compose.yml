@@ -71,6 +71,11 @@ services:
       - TASA_SPEAKER_2_VOICE=/app/models/piper/en_US-kristin-medium.onnx
       - TASA_SPEAKER_2_PERSONALITY=${TASA_SPEAKER_2_PERSONALITY:-energetic, curious, optimistic American}
       - TASA_SPEAKER_2_STYLE=${TASA_SPEAKER_2_STYLE:-enthusiastic, expressive, asks great questions, warm}
+      - TASA_INTERRUPT_MODE=${TASA_INTERRUPT_MODE:-sentence}
+      - TASA_INTERRUPT_URGENCY_THRESHOLD=${TASA_INTERRUPT_URGENCY_THRESHOLD:-0.7}
+      - TASA_MAX_CONSECUTIVE_TURNS=${TASA_MAX_CONSECUTIVE_TURNS:-2}
+      - TASA_OVERLAP_MS=${TASA_OVERLAP_MS:-200}
+      - TASA_INTER_SPEAKER_PAUSE_MS=${TASA_INTER_SPEAKER_PAUSE_MS:-400}
     ports:
       - "8000:8000"
     volumes:

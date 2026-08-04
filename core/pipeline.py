@@ -36,6 +36,12 @@ from core.state import DialogueState
 from modules.dialogue.prompts import build_system_prompt
 from modules.speaker.coordinator import SpeakerCoordinator
 from modules.speaker.prompt_builder import build_multi_speaker_prompt
+from modules.speaker.parser import SpeakerTokenParser, ParsedChunk
+from modules.speaker.queue import SpeakerQueue
+from modules.speaker.tts_worker import SpeakerTTSWorker
+from modules.speaker.interrupt_policy import InterruptPolicy, InterruptStyle
+from modules.speaker.urgency import score_urgency
+from modules.speaker.mixer import AudioMixer, MixerEvent
 from modules.metrics.latency import LatencyTracker
 from modules.metrics.logger import MetricsLogger
 from modules.tools.registry import ToolRegistry
@@ -143,6 +149,11 @@ class StreamingPipeline:
         self.compress_batch = 8
         self.intent_classifier = IntentClassifier()
         self._speaker_coordinator = speaker_coordinator
+        self._token_parser: SpeakerTokenParser | None = None
+        self._speaker_workers: dict[str, SpeakerTTSWorker] = {}
+        self._speaker_queues: dict[str, SpeakerQueue] = {}
+        self._mixer: AudioMixer | None = None
+        self._mixer_task: asyncio.Task | None = None
 
         self._latency = LatencyTracker()
         self._metrics = MetricsLogger()
@@ -958,50 +969,64 @@ class StreamingPipeline:
                         push_nowait(1, self._tool_registry.strip_calls(tail))
             else:
                 llm_start = time.perf_counter()
-                first_token = True
-                tool_marker_seen = False
 
-                bc_timer = asyncio.create_task(
-                    self._backchannel_timer(
-                        text_queue, ctx, session_id, int_ev, seq
+                # Multi-speaker streaming path
+                if self._speaker_coordinator and self._speaker_coordinator.enabled:
+                    ctx.dialogue_state = DialogueState.INTERRUPTIBLE
+                    full = await self._run_multi_speaker_stream(
+                        messages, session_id, ctx, int_ev,
                     )
-                )
-
-                async for token in self.llm.generate_stream(messages):
                     if int_ev.is_set():
-                        break
-                    if first_token:
-                        ctx.dialogue_state = DialogueState.INTERRUPTIBLE
-                        if bc_timer:
-                            bc_timer.cancel()
-                        self._latency.measure("llm_first_token", llm_start)
-                        self._log_latency("llm_first_token")
-                        first_token = False
-                    full += token
-                    await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
+                        return
+                    self._latency.measure("llm_full", llm_start)
+                    self._log_latency("llm_full")
+                    tool_calls = self._tool_registry.find_calls(full)
+                else:
+                    # Normal single-speaker streaming path
+                    first_token = True
+                    tool_marker_seen = False
 
-                    if not tool_marker_seen and "{tool:" in full:
-                        tool_marker_seen = True
-                        stop_tts.set()
-                        await self._drain_queue(text_queue)
-                        chunker.reset()
-                        continue
-                    if tool_marker_seen:
-                        continue
+                    bc_timer = asyncio.create_task(
+                        self._backchannel_timer(
+                            text_queue, ctx, session_id, int_ev, seq
+                        )
+                    )
 
-                    for c in chunker.feed(token):
-                        await push(1, self._tool_registry.strip_calls(c))
+                    async for token in self.llm.generate_stream(messages):
+                        if int_ev.is_set():
+                            break
+                        if first_token:
+                            ctx.dialogue_state = DialogueState.INTERRUPTIBLE
+                            if bc_timer:
+                                bc_timer.cancel()
+                            self._latency.measure("llm_first_token", llm_start)
+                            self._log_latency("llm_first_token")
+                            first_token = False
+                        full += token
+                        await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
 
-                if first_token and bc_timer:
-                    bc_timer.cancel()
+                        if not tool_marker_seen and "{tool:" in full:
+                            tool_marker_seen = True
+                            stop_tts.set()
+                            await self._drain_queue(text_queue)
+                            chunker.reset()
+                            continue
+                        if tool_marker_seen:
+                            continue
 
-                if int_ev.is_set():
-                    return
+                        for c in chunker.feed(token):
+                            await push(1, self._tool_registry.strip_calls(c))
 
-                self._latency.measure("llm_full", llm_start)
-                self._log_latency("llm_full")
+                    if first_token and bc_timer:
+                        bc_timer.cancel()
 
-                tool_calls = self._tool_registry.find_calls(full)
+                    if int_ev.is_set():
+                        return
+
+                    self._latency.measure("llm_full", llm_start)
+                    self._log_latency("llm_full")
+
+                    tool_calls = self._tool_registry.find_calls(full)
 
             # ---- Tool call handling: stop speech, execute, stream followup ----
             if tool_calls and not int_ev.is_set():
@@ -1063,49 +1088,9 @@ class StreamingPipeline:
             if tail:
                 await push(1, self._tool_registry.strip_calls(tail))
 
-            # Multi-speaker: parse speaker tags and re-push with speaker routing
-            if self._speaker_coordinator and self._speaker_coordinator.enabled and full.strip():
-                # Stop the current chunker-based TTS and re-push with speaker info
-                stop_tts.set()
-                await self._drain_queue(text_queue)
-                chunker.reset()
-                if tts_worker:
-                    tts_worker.cancel()
-                    try:
-                        await tts_worker
-                    except (asyncio.CancelledError, Exception):
-                        pass
-
-                segments = self._speaker_coordinator.parse_response(full)
-                if segments:
-                    ctx.active_speaker = segments[0].speaker
-                    stop_tts = asyncio.Event()
-                    tts_worker = asyncio.create_task(
-                        self._tts_worker(text_queue, session_id, stop_tts, eos_ts)
-                    )
-
-                    for i, seg in enumerate(segments):
-                        if int_ev.is_set():
-                            break
-                        # Inter-speaker pause
-                        if i > 0:
-                            prev = segments[i - 1].speaker
-                            pause = self._speaker_coordinator.inter_speaker_pause(prev, seg.speaker)
-                            if pause > 0:
-                                await asyncio.sleep(pause)
-                                if int_ev.is_set():
-                                    break
-
-                        ctx.active_speaker = seg.speaker
-                        # Emit speaker event for UI
-                        await self._emit(
-                            PipelineEvent.LLM_TOKEN,
-                            f"[{seg.speaker}]",
-                            session_id,
-                        )
-                        await push(1, self._tool_registry.strip_calls(seg.text), speaker=seg.speaker)
-
-            await self._emit(PipelineEvent.LLM_DONE, full, session_id)
+            # Single-speaker: emit LLM done here (multi-speaker emits in streaming method)
+            if not (self._speaker_coordinator and self._speaker_coordinator.enabled):
+                await self._emit(PipelineEvent.LLM_DONE, full, session_id)
 
             # End-of-stream sentinel (lowest priority: drained last)
             text_queue.put_nowait((2, next(seq), None, None, None))
@@ -1152,6 +1137,177 @@ class StreamingPipeline:
                 queue.get_nowait()
             except asyncio.QueueEmpty:
                 return
+
+    async def _run_multi_speaker_stream(
+        self,
+        messages: list[dict[str, str]],
+        session_id: str,
+        ctx: ConversationContext,
+        int_ev: asyncio.Event,
+    ) -> str:
+        """Stream LLM output through per-speaker queues with parallel TTS.
+
+        Returns the full LLM response text.
+        """
+        coordinator = self._speaker_coordinator
+        if not coordinator or not coordinator.enabled:
+            return ""
+
+        # Initialize workers if not done
+        if not coordinator._initialized:
+            coordinator.init_workers(self.tts, session_id)
+        coordinator.start_workers()
+
+        # Create token parser
+        parser = SpeakerTokenParser(known_speakers=coordinator.speaker_names())
+        self._token_parser = parser
+
+        # Start the output merger task
+        merger_task = asyncio.create_task(
+            self._merge_worker_outputs(session_id, ctx, int_ev)
+        )
+
+        full_response = ""
+
+        try:
+            async for token in self.llm.generate_stream(messages):
+                if int_ev.is_set():
+                    break
+
+                full_response += token
+                await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
+
+                # Parse token for speaker tags
+                chunks = parser.feed_token(token)
+
+                for chunk in chunks:
+                    if int_ev.is_set():
+                        break
+
+                    speaker = chunk.speaker
+                    is_urgent = chunk.is_urgent
+
+                    # Check if this speaker should interrupt the other
+                    if is_urgent or coordinator.should_interrupt(speaker, chunk.text) != InterruptStyle.NONE:
+                        other = coordinator._other_than(speaker)
+                        if coordinator.should_interrupt(speaker, chunk.text) == InterruptStyle.HARD:
+                            coordinator.interrupt_speaker(other)
+                            await self._emit(PipelineEvent.INTERRUPT, session_id=session_id)
+                        else:
+                            coordinator.pause_speaker(other)
+
+                    # Route chunk to the correct speaker's queue
+                    await coordinator.push_chunk(
+                        speaker=speaker,
+                        text=chunk.text,
+                        is_urgent=is_urgent,
+                        urgency_tag=chunk.urgency_tag,
+                    )
+                    coordinator.record_turn(speaker)
+
+            # Flush remaining buffer
+            remainder = parser.flush()
+            if remainder:
+                await coordinator.push_chunk(
+                    speaker=remainder.speaker,
+                    text=remainder.text,
+                )
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"multi-speaker stream error: {e}")
+
+        # Wait for all workers to finish
+        for worker in coordinator._workers.values():
+            await worker.wait_done()
+
+        # Wait for merger to finish
+        try:
+            await asyncio.wait_for(merger_task, timeout=5.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            merger_task.cancel()
+
+        return full_response
+
+    async def _merge_worker_outputs(
+        self,
+        session_id: str,
+        ctx: ConversationContext,
+        int_ev: asyncio.Event,
+    ) -> None:
+        """Merge audio output from all per-speaker TTS workers into the main output queue.
+
+        Reads from each worker's output queue concurrently and emits
+        TTS_CHUNK events with speaker metadata.
+        """
+        coordinator = self._speaker_coordinator
+        if not coordinator:
+            return
+
+        worker_outputs = coordinator.get_all_worker_outputs()
+        if not worker_outputs:
+            return
+
+        sr = self.tts.sample_rate
+        total_bytes = 0
+        first_emit: float | None = None
+        eos_ts = time.perf_counter()
+
+        async def _consume_one(speaker: str, queue: asyncio.Queue):
+            nonlocal total_bytes, first_emit
+            while not int_ev.is_set():
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=0.2)
+                except asyncio.TimeoutError:
+                    continue
+
+                if item is None:
+                    break
+
+                speaker_name, audio_data, is_urgent = item
+
+                if isinstance(audio_data, bytes) and len(audio_data) > 0:
+                    if first_emit is None:
+                        first_emit = time.monotonic()
+                        self._latency.measure("tts_first", eos_ts)
+                        self._playback_onset[session_id] = first_emit
+                        self._echo_floor[session_id] = 0.0
+
+                    total_bytes += len(audio_data)
+                    energy = rms_energy(audio_data) / 32768.0
+                    self._echo_floor[session_id] = max(
+                        self._echo_floor.get(session_id, 0.0), energy
+                    )
+                    self._playback_active[session_id] = True
+                    wav = self._pcm_to_wav(audio_data, sr)
+
+                    # Emit with speaker info
+                    await self._output_queue.put(PipelineMessage(
+                        PipelineEvent.TTS_CHUNK, wav, session_id
+                    ))
+                elif len(audio_data) == 0:
+                    # Sentence end signal
+                    pass
+
+        tasks = [
+            asyncio.create_task(_consume_one(name, q))
+            for name, q in worker_outputs.items()
+        ]
+
+        try:
+            await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            for t in tasks:
+                t.cancel()
+            raise
+
+        # Schedule playback clear
+        if total_bytes > 0 and first_emit is not None:
+            self._schedule_playback_clear(
+                session_id,
+                first_emit + total_bytes / (sr * 2) - time.monotonic(),
+            )
 
     async def _backchannel_timer(
         self,

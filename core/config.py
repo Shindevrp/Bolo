@@ -115,3 +115,18 @@ class CoreConfig:
             "enthusiastic, expressive, asks great questions, warm",
         )
     )
+    interrupt_mode: str = field(
+        default_factory=lambda: os.getenv("TASA_INTERRUPT_MODE", "sentence")
+    )
+    interrupt_urgency_threshold: float = field(
+        default_factory=lambda: float(os.getenv("TASA_INTERRUPT_URGENCY_THRESHOLD", "0.7"))
+    )
+    max_consecutive_turns: int = field(
+        default_factory=lambda: int(os.getenv("TASA_MAX_CONSECUTIVE_TURNS", "2"))
+    )
+    overlap_ms: int = field(
+        default_factory=lambda: int(os.getenv("TASA_OVERLAP_MS", "200"))
+    )
+    inter_speaker_pause_ms: int = field(
+        default_factory=lambda: int(os.getenv("TASA_INTER_SPEAKER_PAUSE_MS", "400"))
+    )
