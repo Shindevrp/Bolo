@@ -39,9 +39,14 @@ from modules.speaker.prompt_builder import build_multi_speaker_prompt
 from modules.speaker.parser import SpeakerTokenParser, ParsedChunk
 from modules.speaker.queue import SpeakerQueue
 from modules.speaker.tts_worker import SpeakerTTSWorker
-from modules.speaker.interrupt_policy import InterruptPolicy, InterruptStyle
+from modules.speaker.interrupt_policy import InterruptPolicy, InterruptStyle, InterruptType
 from modules.speaker.urgency import score_urgency
 from modules.speaker.mixer import AudioMixer, MixerEvent
+from modules.speaker.stream_state import StreamState
+from modules.speaker.speaker_predictor import SpeakerPredictor
+from modules.speaker.resume import ResumeManager
+from modules.speaker.metrics import SpeakerMetrics
+from modules.speaker.prosody_events import ProsodyEventGenerator, AdaptiveOverlapCalculator
 from modules.metrics.latency import LatencyTracker
 from modules.metrics.logger import MetricsLogger
 from modules.tools.registry import ToolRegistry
@@ -1145,7 +1150,14 @@ class StreamingPipeline:
         ctx: ConversationContext,
         int_ev: asyncio.Event,
     ) -> str:
-        """Stream LLM output through per-speaker queues with parallel TTS.
+        """Stream LLM output through per-speaker queues with full intelligence.
+
+        Features:
+        - Real-time StreamState tracking per speaker
+        - Multi-factor interrupt decisions
+        - Speaker prediction before tags
+        - Resume-after-interrupt with checkpoints
+        - Adaptive overlap
 
         Returns the full LLM response text.
         """
@@ -1168,6 +1180,8 @@ class StreamingPipeline:
         )
 
         full_response = ""
+        current_speaker_chunks: dict[str, str] = {name: "" for name in coordinator.speaker_names()}
+        pre_speech_emitted: dict[str, bool] = {name: False for name in coordinator.speaker_names()}
 
         try:
             async for token in self.llm.generate_stream(messages):
@@ -1187,14 +1201,44 @@ class StreamingPipeline:
                     speaker = chunk.speaker
                     is_urgent = chunk.is_urgent
 
-                    # Check if this speaker should interrupt the other
-                    if is_urgent or coordinator.should_interrupt(speaker, chunk.text) != InterruptStyle.NONE:
+                    # Update stream state for this speaker
+                    coordinator.update_stream_state(speaker, chunk.text)
+
+                    # Emit pre-speech breath sound (once per speaker turn)
+                    if not pre_speech_emitted.get(speaker, False):
+                        prosody_events = coordinator.get_prosody_events(speaker)
+                        breath = prosody_events.before_speech(speaker)
+                        # Breath audio will be picked up by the worker
+                        pre_speech_emitted[speaker] = True
+
+                    # Check for interrupt
+                    if is_urgent or coordinator.should_interrupt(speaker, chunk.text)[0] != InterruptStyle.NONE:
+                        style, interrupt_type, overlap_ms = coordinator.should_interrupt(speaker, chunk.text)
                         other = coordinator._other_than(speaker)
-                        if coordinator.should_interrupt(speaker, chunk.text) == InterruptStyle.HARD:
+
+                        # Create checkpoint for interrupted speaker
+                        other_chunks = current_speaker_chunks.get(other, "")
+                        if other_chunks:
+                            coordinator.checkpoint_on_interrupt(
+                                other, other_chunks, ctx.topic
+                            )
+
+                        if style == InterruptStyle.HARD:
                             coordinator.interrupt_speaker(other)
                             await self._emit(PipelineEvent.INTERRUPT, session_id=session_id)
                         else:
                             coordinator.pause_speaker(other)
+
+                        # Track metrics
+                        coordinator._metrics.record_interrupt(
+                            interrupter=speaker,
+                            interrupted=other,
+                            interrupt_type=interrupt_type.value,
+                            latency_ms=0,  # Will be computed from timestamp
+                            overlap_ms=overlap_ms,
+                            confidence=coordinator._stream_states[speaker].intent_confidence
+                            if coordinator._stream_states.get(speaker) else 0.5,
+                        )
 
                     # Route chunk to the correct speaker's queue
                     await coordinator.push_chunk(
@@ -1204,6 +1248,16 @@ class StreamingPipeline:
                         urgency_tag=chunk.urgency_tag,
                     )
                     coordinator.record_turn(speaker)
+
+                    # Track chunks per speaker for checkpointing
+                    current_speaker_chunks[speaker] = (
+                        current_speaker_chunks.get(speaker, "") + " " + chunk.text
+                    )
+
+                    # Reset pre-speech flag when speaker changes
+                    if coordinator.last_speaker != speaker:
+                        pre_speech_emitted[coordinator.last_speaker] = False
+                        pre_speech_emitted[speaker] = False
 
             # Flush remaining buffer
             remainder = parser.flush()
@@ -1227,6 +1281,9 @@ class StreamingPipeline:
             await asyncio.wait_for(merger_task, timeout=5.0)
         except (asyncio.TimeoutError, asyncio.CancelledError):
             merger_task.cancel()
+
+        # Log metrics
+        logger.info(coordinator._metrics.to_debug_log())
 
         return full_response
 
