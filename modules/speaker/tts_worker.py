@@ -88,6 +88,19 @@ class SpeakerTTSWorker:
             except (asyncio.CancelledError, Exception):
                 pass
 
+    async def wait_idle(self, timeout: float = 5.0) -> None:
+        """Wait until the worker has consumed all queued items and gone idle.
+
+        Workers persist across turns (they loop until stopped), so we can't
+        await the task itself; we wait for the queue to drain and synthesis
+        to finish so the end-of-turn bookkeeping can proceed.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.queue.empty and not self.queue.busy:
+                return
+            await asyncio.sleep(0.05)
+
     async def _run(self) -> None:
         sr = self.tts.sample_rate
 

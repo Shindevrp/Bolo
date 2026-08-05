@@ -29,6 +29,7 @@ class SpeakerTokenParser:
     """
 
     def __init__(self, known_speakers: list[str]) -> None:
+        self._speaker_order = list(known_speakers)
         self.known_speakers = set(known_speakers)
         self._buffer = ""
         self._current_speaker: str | None = None
@@ -46,7 +47,7 @@ class SpeakerTokenParser:
         if not text:
             return None
         speaker = self._current_speaker or (
-            self.known_speakers[0] if self.known_speakers else "assistant"
+            self._speaker_order[0] if self._speaker_order else "assistant"
         )
         return ParsedChunk(speaker=speaker, text=text)
 
@@ -74,7 +75,7 @@ class SpeakerTokenParser:
                     chunks.append(ParsedChunk(speaker=self._current_speaker, text=text))
                 elif text:
                     # No speaker yet — assign to first known speaker
-                    speaker = self.known_speakers[0] if self.known_speakers else "assistant"
+                    speaker = self._speaker_order[0] if self._speaker_order else "assistant"
                     chunks.append(ParsedChunk(speaker=speaker, text=text))
                 self._buffer = ""
                 break

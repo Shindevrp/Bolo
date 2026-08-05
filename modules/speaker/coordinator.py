@@ -116,6 +116,15 @@ class SpeakerCoordinator:
         for worker in self._workers.values():
             worker.start()
 
+    def drain_all_queues(self) -> None:
+        """Clear all speaker queues — used when tool calls stop speech mid-stream."""
+        for queue in self._queues.values():
+            while not queue.empty:
+                try:
+                    queue._queue.get_nowait()
+                except Exception:
+                    break
+
     async def stop_workers(self) -> None:
         """Stop all TTS workers."""
         for worker in self._workers.values():

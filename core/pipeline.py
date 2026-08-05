@@ -783,6 +783,7 @@ class StreamingPipeline:
                 spec_messages = await self._build_messages(
                     partial, ctx, memory, retrieval,
                     facts=self._facts.get(session_id),
+                    session_id=session_id,
                 )
 
                 async def _spec_llm():
@@ -870,6 +871,7 @@ class StreamingPipeline:
                 messages = await self._build_messages(
                     transcript, ctx, memory, retrieval,
                     facts=self._facts.get(session_id),
+                    session_id=session_id,
                 )
 
             if memory:
@@ -1065,28 +1067,38 @@ class StreamingPipeline:
                 })
 
                 full = ""
-                stop_tts = asyncio.Event()
-                tts_worker = asyncio.create_task(
-                    self._tts_worker(text_queue, session_id, stop_tts, eos_ts)
-                )
-
-                llm_start = time.perf_counter()
-                first_token = True
-                async for token in self.llm.generate_stream(followup_messages):
+                if self._speaker_coordinator and self._speaker_coordinator.enabled:
+                    # Multi-speaker: re-stream the follow-up through the
+                    # per-speaker path so [Sh]/[Ti] speaker tags are honored.
+                    tts_worker = None
+                    full = await self._run_multi_speaker_stream(
+                        followup_messages, session_id, ctx, int_ev,
+                    )
                     if int_ev.is_set():
-                        break
-                    if first_token:
-                        first_token = False
-                    full += token
-                    await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
-                    for c in chunker.feed(token):
-                        await push(1, self._tool_registry.strip_calls(c))
+                        return
+                else:
+                    stop_tts = asyncio.Event()
+                    tts_worker = asyncio.create_task(
+                        self._tts_worker(text_queue, session_id, stop_tts, eos_ts)
+                    )
 
-                if int_ev.is_set():
-                    return
+                    llm_start = time.perf_counter()
+                    first_token = True
+                    async for token in self.llm.generate_stream(followup_messages):
+                        if int_ev.is_set():
+                            break
+                        if first_token:
+                            first_token = False
+                        full += token
+                        await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
+                        for c in chunker.feed(token):
+                            await push(1, self._tool_registry.strip_calls(c))
 
-                self._latency.measure("llm_full", llm_start)
-                self._log_latency("llm_full")
+                    if int_ev.is_set():
+                        return
+
+                    self._latency.measure("llm_full", llm_start)
+                    self._log_latency("llm_full")
 
             # Flush any remaining partial chunk
             tail = chunker.flush()
@@ -1182,6 +1194,7 @@ class StreamingPipeline:
         full_response = ""
         current_speaker_chunks: dict[str, str] = {name: "" for name in coordinator.speaker_names()}
         pre_speech_emitted: dict[str, bool] = {name: False for name in coordinator.speaker_names()}
+        tool_marker_seen = False
 
         try:
             async for token in self.llm.generate_stream(messages):
@@ -1191,8 +1204,19 @@ class StreamingPipeline:
                 full_response += token
                 await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
 
-                # Parse token for speaker tags
-                chunks = parser.feed_token(token)
+                if not tool_marker_seen and "{tool:" in full_response:
+                    tool_marker_seen = True
+                    coordinator.drain_all_queues()
+                    await self._emit(PipelineEvent.SPEECH_END, session_id=session_id)
+                    continue
+                if tool_marker_seen:
+                    continue
+
+                stripped = self._tool_registry.strip_calls(token)
+                if not stripped:
+                    continue
+
+                chunks = parser.feed_token(stripped)
 
                 for chunk in chunks:
                     if int_ev.is_set():
@@ -1201,22 +1225,17 @@ class StreamingPipeline:
                     speaker = chunk.speaker
                     is_urgent = chunk.is_urgent
 
-                    # Update stream state for this speaker
                     coordinator.update_stream_state(speaker, chunk.text)
 
-                    # Emit pre-speech breath sound (once per speaker turn)
                     if not pre_speech_emitted.get(speaker, False):
                         prosody_events = coordinator.get_prosody_events(speaker)
-                        breath = prosody_events.before_speech(speaker)
-                        # Breath audio will be picked up by the worker
+                        prosody_events.before_speech(speaker)
                         pre_speech_emitted[speaker] = True
 
-                    # Check for interrupt
                     if is_urgent or coordinator.should_interrupt(speaker, chunk.text)[0] != InterruptStyle.NONE:
                         style, interrupt_type, overlap_ms = coordinator.should_interrupt(speaker, chunk.text)
                         other = coordinator._other_than(speaker)
 
-                        # Create checkpoint for interrupted speaker
                         other_chunks = current_speaker_chunks.get(other, "")
                         if other_chunks:
                             coordinator.checkpoint_on_interrupt(
@@ -1229,18 +1248,16 @@ class StreamingPipeline:
                         else:
                             coordinator.pause_speaker(other)
 
-                        # Track metrics
                         coordinator._metrics.record_interrupt(
                             interrupter=speaker,
                             interrupted=other,
                             interrupt_type=interrupt_type.value,
-                            latency_ms=0,  # Will be computed from timestamp
+                            latency_ms=0,
                             overlap_ms=overlap_ms,
                             confidence=coordinator._stream_states[speaker].intent_confidence
                             if coordinator._stream_states.get(speaker) else 0.5,
                         )
 
-                    # Route chunk to the correct speaker's queue
                     await coordinator.push_chunk(
                         speaker=speaker,
                         text=chunk.text,
@@ -1249,12 +1266,10 @@ class StreamingPipeline:
                     )
                     coordinator.record_turn(speaker)
 
-                    # Track chunks per speaker for checkpointing
                     current_speaker_chunks[speaker] = (
                         current_speaker_chunks.get(speaker, "") + " " + chunk.text
                     )
 
-                    # Reset pre-speech flag when speaker changes
                     if coordinator.last_speaker != speaker:
                         pre_speech_emitted[coordinator.last_speaker] = False
                         pre_speech_emitted[speaker] = False
@@ -1272,9 +1287,10 @@ class StreamingPipeline:
         except Exception as e:
             logger.error(f"multi-speaker stream error: {e}")
 
-        # Wait for all workers to finish
+        # Wait for all workers to finish synthesizing (bounded — workers
+        # persist across turns and would otherwise block forever).
         for worker in coordinator._workers.values():
-            await worker.wait_done()
+            await worker.wait_idle(timeout=5.0)
 
         # Wait for merger to finish
         try:
@@ -1613,6 +1629,7 @@ class StreamingPipeline:
         memory: SessionMemory | None,
         retrieval: RetrievalModule | None,
         facts: FactMemory | None = None,
+        session_id: str = "default",
     ) -> list[dict[str, str]]:
         has_context = False
         retrieved: list[tuple[str, str | None]] = []
