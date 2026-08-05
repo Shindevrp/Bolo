@@ -1195,6 +1195,8 @@ class StreamingPipeline:
         current_speaker_chunks: dict[str, str] = {name: "" for name in coordinator.speaker_names()}
         pre_speech_emitted: dict[str, bool] = {name: False for name in coordinator.speaker_names()}
         tool_marker_seen = False
+        _TOOL_OPEN = "{tool:"
+        held = ""  # tokens that may be the start of a tool marker
 
         try:
             async for token in self.llm.generate_stream(messages):
@@ -1204,15 +1206,28 @@ class StreamingPipeline:
                 full_response += token
                 await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
 
-                if not tool_marker_seen and "{tool:" in full_response:
-                    tool_marker_seen = True
-                    coordinator.drain_all_queues()
-                    await self._emit(PipelineEvent.SPEECH_END, session_id=session_id)
-                    continue
                 if tool_marker_seen:
                     continue
 
-                stripped = self._tool_registry.strip_calls(token)
+                candidate = held + token
+                if candidate.startswith(_TOOL_OPEN):
+                    # Tool marker opened — never feed any fragment to the
+                    # parser/TTS so it can't be spoken aloud.
+                    tool_marker_seen = True
+                    held = ""
+                    parser.reset()
+                    coordinator.drain_all_queues()
+                    await self._emit(PipelineEvent.SPEECH_END, session_id=session_id)
+                    continue
+                if _TOOL_OPEN.startswith(candidate) and len(candidate) < len(_TOOL_OPEN):
+                    # Candidate is a partial marker prefix — hold it.
+                    held = candidate
+                    continue
+
+                # Not a tool marker — release any held tokens as normal text.
+                text = held + token
+                held = ""
+                stripped = self._tool_registry.strip_calls(text)
                 if not stripped:
                     continue
 
