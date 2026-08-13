@@ -92,7 +92,7 @@ def get_builtin_tools() -> ToolRegistry:
             },
         },
         handler=get_weather,
-        proactive_hint="If the user mentions weather, temperature, rain, sun, outdoor plans, or how hot/cold it is somewhere, proactively offer the weather.",
+        proactive_hint="the user asks about weather, temperature, rain, sun, or how hot/cold it is somewhere — ALWAYS use get_weather, never search_web for weather.",
     ))
 
     registry.register(ToolSpec(
@@ -104,7 +104,7 @@ def get_builtin_tools() -> ToolRegistry:
             },
         },
         handler=search_web,
-        proactive_hint="If the user asks about current events, facts you're unsure about, or needs information you don't have, search the web.",
+        proactive_hint="the user asks for a fact, a general question you're unsure about, or specific information like a person, event, or topic — use for general web search.",
     ))
 
     registry.register(ToolSpec(
@@ -116,7 +116,7 @@ def get_builtin_tools() -> ToolRegistry:
             },
         },
         handler=get_news,
-        proactive_hint="If the user asks about current events, what's happening in the world, or wants news updates, use this tool.",
+        proactive_hint="the user asks about news, headlines, or what's happening in the world — use this instead of search_web.",
     ))
 
     registry.register(ToolSpec(

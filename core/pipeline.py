@@ -1047,58 +1047,105 @@ class StreamingPipeline:
                     except (asyncio.CancelledError, Exception):
                         pass
 
-                tool_results = await asyncio.gather(
-                    *[self._tool_registry.execute_call(c) for c in tool_calls]
-                )
                 followup_messages = messages if not used_speculation else spec_messages
                 followup_messages = list(followup_messages)
                 followup_messages.append({
                     "role": "assistant",
                     "content": full,
                 })
-                for tr in tool_results:
-                    followup_messages.append({
-                        "role": "tool",
-                        "content": f"{tr['tool']} result: {tr['result']}",
-                    })
-                followup_messages.append({
-                    "role": "user",
-                    "content": "Continue naturally with the tool results.",
-                })
 
-                full = ""
+                tag_hint = ""
                 if self._speaker_coordinator and self._speaker_coordinator.enabled:
-                    # Multi-speaker: re-stream the follow-up through the
-                    # per-speaker path so [Sh]/[Ti] speaker tags are honored.
-                    tts_worker = None
-                    full = await self._run_multi_speaker_stream(
-                        followup_messages, session_id, ctx, int_ev,
-                    )
-                    if int_ev.is_set():
-                        return
-                else:
-                    stop_tts = asyncio.Event()
-                    tts_worker = asyncio.create_task(
-                        self._tts_worker(text_queue, session_id, stop_tts, eos_ts)
+                    tag_hint = (
+                        " Answer using [Sh] and [Ti] speaker tags exactly as "
+                        "instructed in the system prompt."
                     )
 
-                    llm_start = time.perf_counter()
-                    first_token = True
-                    async for token in self.llm.generate_stream(followup_messages):
+                # Bounded tool round-trip loop: execute, feed results back, and
+                # stream the LLM's final answer. If the LLM (incorrectly) emits
+                # another tool call in the follow-up, execute it too — up to a
+                # hard cap so a misbehaving model can't loop forever.
+                for _round in range(3):
+                    if int_ev.is_set():
+                        return
+
+                    tool_results = await asyncio.gather(
+                        *[self._tool_registry.execute_call_with_retry(c) for c in tool_calls]
+                    )
+                    for tr in tool_results:
+                        followup_messages.append({
+                            "role": "tool",
+                            "content": f"{tr['tool']} result: {tr['result']}",
+                        })
+                    if any(tr.get("failed") for tr in tool_results):
+                        followup_messages.append({
+                            "role": "user",
+                            "content": (
+                                "The tool failed and the system already retried. "
+                                "Do NOT invent data, do NOT call another tool, and do NOT "
+                                "improvise a fallback. Briefly tell the user the "
+                                "information is currently unavailable and continue naturally."
+                            ) + tag_hint,
+                        })
+                    else:
+                        followup_messages.append({
+                            "role": "user",
+                            "content": "Continue naturally with the tool results." + tag_hint,
+                        })
+
+                    full = ""
+                    if self._speaker_coordinator and self._speaker_coordinator.enabled:
+                        # Multi-speaker: re-stream the follow-up through the
+                        # per-speaker path so [Sh]/[Ti] speaker tags are honored.
+                        tts_worker = None
+                        full = await self._run_multi_speaker_stream(
+                            followup_messages, session_id, ctx, int_ev,
+                        )
                         if int_ev.is_set():
-                            break
-                        if first_token:
-                            first_token = False
-                        full += token
-                        await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
-                        for c in chunker.feed(token):
-                            await push(1, self._tool_registry.strip_calls(c))
+                            return
+                    else:
+                        stop_tts = asyncio.Event()
+                        tts_worker = asyncio.create_task(
+                            self._tts_worker(text_queue, session_id, stop_tts, eos_ts)
+                        )
 
-                    if int_ev.is_set():
-                        return
+                        llm_start = time.perf_counter()
+                        first_token = True
+                        async for token in self.llm.generate_stream(followup_messages):
+                            if int_ev.is_set():
+                                break
+                            if first_token:
+                                first_token = False
+                            full += token
+                            await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
+                            for c in chunker.feed(token):
+                                await push(1, self._tool_registry.strip_calls(c))
 
-                    self._latency.measure("llm_full", llm_start)
-                    self._log_latency("llm_full")
+                        if int_ev.is_set():
+                            return
+
+                        self._latency.measure("llm_full", llm_start)
+                        self._log_latency("llm_full")
+
+                    # If the follow-up still contains a tool call, execute it
+                    # next round. Otherwise we're done streaming the answer.
+                    next_calls = self._tool_registry.find_calls(full)
+                    if not next_calls:
+                        break
+                    followup_messages.append({
+                        "role": "assistant",
+                        "content": full,
+                    })
+                    tool_calls = next_calls
+                    stop_tts.set()
+                    await self._drain_queue(text_queue)
+                    chunker.reset()
+                    if tts_worker:
+                        tts_worker.cancel()
+                        try:
+                            await tts_worker
+                        except (asyncio.CancelledError, Exception):
+                            pass
 
             # Flush any remaining partial chunk
             tail = chunker.flush()
