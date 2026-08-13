@@ -17,7 +17,7 @@ from app.session_registry import register as register_session
 from app.session_registry import unregister as unregister_session
 from modules.memory.session import SessionMemory
 from modules.memory.retrieval import RetrievalModule
-from modules.speaker.parser import split_speaker_token
+from modules.speaker.parser import split_token_segments
 from utils.logger import get_logger
 
 logger = get_logger("webrtc")
@@ -144,12 +144,12 @@ async def webrtc_signal(websocket: WebSocket):
                         known = set()
                         if pipeline._speaker_coordinator:
                             known = set(pipeline._speaker_coordinator.speaker_names())
-                        token, speaker = split_speaker_token(str(msg.data), known)
-                        await websocket.send_json({
-                            "type": "llm_token",
-                            "token": token,
-                            "speaker": speaker,
-                        })
+                        for text, speaker in split_token_segments(str(msg.data), known):
+                            await websocket.send_json({
+                                "type": "llm_token",
+                                "token": text,
+                                "speaker": speaker,
+                            })
 
                     elif msg.event == PipelineEvent.LLM_DONE:
                         session.add_ai_turn(str(msg.data))

@@ -6,6 +6,7 @@ from typing import Iterator
 
 _TAG_RE = re.compile(r"\[([^\]]+)\]")
 _TAG_AT_START_RE = re.compile(r"^\s*\[([^\]]+)\]\s*")
+_SEGMENT_RE = re.compile(r"(\[[^\]]+\])|(\{tool:[^}]*\})")
 _SENTENCE_TERMINATORS = frozenset(".!?…\n")
 _CLAUSE_CHARS = frozenset(",;:\u2014-")
 _ABBREVIATIONS = {
@@ -46,6 +47,45 @@ def split_speaker_token(
     if not rest and not speaker:
         return "", ""
     return rest, speaker
+
+
+def split_token_segments(
+    token: str, known_speakers: set[str] | None = None
+) -> list[tuple[str, str]]:
+    """Split a token into (text, speaker) segments for UI display.
+
+    Recognizes speaker tags (``[Sh]``, ``[Ti! urgent]``) anywhere in the
+    token, splitting into separate segments, and drops ``{tool:...}`` markers
+    from the visible text. Unknown tags are dropped without creating a speaker.
+    """
+    segments: list[tuple[str, str]] = []
+    text_buf = ""
+    pos = 0
+    for m in _SEGMENT_RE.finditer(token):
+        if m.group(2):
+            # {tool:...} marker: drop from display, flush pending text.
+            text_buf += token[pos:m.start()]
+            pos = m.end()
+            if text_buf:
+                segments.append((text_buf.lstrip(), ""))
+                text_buf = ""
+            continue
+        text_buf += token[pos:m.start()]
+        content = m.group(1)[1:-1].strip()
+        speaker = content.split("!", 1)[0].strip()
+        if known_speakers and speaker.lower() not in {k.lower() for k in known_speakers}:
+            # Unknown tag: drop it but keep the surrounding text flowing.
+            pos = m.end()
+            continue
+        if text_buf:
+            segments.append((text_buf.lstrip(), ""))
+        segments.append(("", speaker))
+        text_buf = ""
+        pos = m.end()
+    text_buf += token[pos:]
+    if text_buf:
+        segments.append((text_buf.lstrip(), ""))
+    return segments
 
 
 class SpeakerTokenParser:
