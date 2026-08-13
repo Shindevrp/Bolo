@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Iterator
 
 _TAG_RE = re.compile(r"\[([^\]]+)\]")
+_TAG_AT_START_RE = re.compile(r"^\s*\[([^\]]+)\]\s*")
 _SENTENCE_TERMINATORS = frozenset(".!?…\n")
 _CLAUSE_CHARS = frozenset(",;:\u2014-")
 _ABBREVIATIONS = {
@@ -21,6 +22,30 @@ class ParsedChunk:
     text: str
     is_urgent: bool = False
     urgency_tag: str = ""
+
+
+def split_speaker_token(
+    token: str, known_speakers: set[str] | None = None
+) -> tuple[str, str]:
+    """Split a leading ``[Speaker]`` tag off an LLM token for UI display.
+
+    Returns ``(text_without_tag, speaker)``. ``speaker`` is ``""`` when no tag
+    is present. Only tags matching a known speaker are recognized, so an LLM
+    glitch like ``[YourName]`` never becomes a speaker label; the tag is still
+    stripped from the visible text.
+    """
+    m = _TAG_AT_START_RE.match(token)
+    if not m:
+        return token, ""
+    content = m.group(1).strip()
+    speaker = content.split("!", 1)[0].strip()
+    if known_speakers and speaker.lower() not in {k.lower() for k in known_speakers}:
+        # Unknown tag: drop it from display text but don't create a speaker.
+        return token[m.end():], ""
+    rest = token[m.end():]
+    if not rest and not speaker:
+        return "", ""
+    return rest, speaker
 
 
 class SpeakerTokenParser:

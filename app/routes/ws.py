@@ -13,6 +13,7 @@ from app.session_registry import register as register_session
 from app.session_registry import unregister as unregister_session
 from modules.memory.session import SessionMemory
 from modules.memory.retrieval import RetrievalModule
+from modules.speaker.parser import split_speaker_token
 from utils.logger import get_logger
 
 logger = get_logger("ws")
@@ -78,16 +79,14 @@ async def audio_websocket(websocket: WebSocket):
 
                     elif msg.event == PipelineEvent.LLM_TOKEN:
                         session.set_state(DialogueState.INTERRUPTIBLE)
-                        token = str(msg.data)
-                        # Check if this is a speaker tag like [Sh] or [Ti]
-                        is_speaker_tag = (
-                            token.startswith("[") and token.endswith("]")
-                            and len(token) < 20
-                        )
+                        known = set()
+                        if pipeline._speaker_coordinator:
+                            known = set(pipeline._speaker_coordinator.speaker_names())
+                        token, speaker = split_speaker_token(str(msg.data), known)
                         await websocket.send_json({
                             "type": "llm_token",
                             "token": token,
-                            "speaker": token.strip("[]") if is_speaker_tag else "",
+                            "speaker": speaker,
                         })
 
                     elif msg.event == PipelineEvent.LLM_DONE:
