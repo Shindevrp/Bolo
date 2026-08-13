@@ -69,9 +69,9 @@ class TestTTSWorkerPriority:
             p = _make_pipeline()
             q: asyncio.PriorityQueue = asyncio.PriorityQueue()
             seq = itertools.count()
-            q.put_nowait((1, next(seq), "Second sentence.", None))
-            q.put_nowait((0, next(seq), "hmm", None))
-            q.put_nowait((2, next(seq), None, None))
+            q.put_nowait((1, next(seq), "Second sentence.", None, None))
+            q.put_nowait((0, next(seq), "hmm", None, None))
+            q.put_nowait((2, next(seq), None, None, None))
             await p._tts_worker(q, "sess", asyncio.Event())
             return p.tts.synthesized
 
@@ -83,8 +83,8 @@ class TestTTSWorkerPriority:
             p = _make_pipeline()
             q: asyncio.PriorityQueue = asyncio.PriorityQueue()
             seq = itertools.count()
-            q.put_nowait((1, next(seq), "Should be dropped.", None))
-            q.put_nowait((2, next(seq), None, None))
+            q.put_nowait((1, next(seq), "Should be dropped.", None, None))
+            q.put_nowait((2, next(seq), None, None, None))
             int_ev = p._int_event("sess")
             int_ev.set()
             await p._tts_worker(q, "sess", int_ev)
@@ -98,7 +98,7 @@ class TestTTSWorkerPriority:
             p = _make_pipeline()
             q: asyncio.PriorityQueue = asyncio.PriorityQueue()
             seq = itertools.count()
-            q.put_nowait((1, next(seq), "Drop me.", None))
+            q.put_nowait((1, next(seq), "Drop me.", None, None))
             stop = asyncio.Event()
             stop.set()
             await p._tts_worker(q, "sess", stop)
@@ -359,8 +359,8 @@ class TestPlaybackActive:
             p = _make_pipeline()
             q: asyncio.PriorityQueue = asyncio.PriorityQueue()
             seq = itertools.count()
-            q.put_nowait((1, next(seq), "Say something.", None))
-            q.put_nowait((2, next(seq), None, None))
+            q.put_nowait((1, next(seq), "Say something.", None, None))
+            q.put_nowait((2, next(seq), None, None, None))
             await p._tts_worker(q, "sess", asyncio.Event())
             assert p._playback_active.get("sess") is True
             await asyncio.sleep(0.7)
@@ -425,7 +425,7 @@ class TestPlaybackActive:
             p = _make_pipeline()
             q: asyncio.PriorityQueue = asyncio.PriorityQueue()
             seq = itertools.count()
-            q.put_nowait((1, next(seq), "Played already.", None))
+            q.put_nowait((1, next(seq), "Played already.", None, None))
             worker = asyncio.create_task(p._tts_worker(q, "sess", asyncio.Event()))
             await asyncio.sleep(0.3)
             worker.cancel()
@@ -621,7 +621,7 @@ class TestBackchannelTiming:
             )
 
             assert not q.empty()
-            prio, _, text, _prosody = q.get_nowait()
+            prio, _, text, _prosody, _speaker = q.get_nowait()
             assert prio == 0
             assert text in BACKCHANNEL_CANDIDATES["thinking"]
 
