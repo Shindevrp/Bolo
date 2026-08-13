@@ -308,6 +308,7 @@ class SpeakerCoordinator:
         self._turn_counts[speaker] = self._turn_counts.get(speaker, 0) + 1
         self.last_speaker = speaker
         self._predictor.record_turn(speaker, "")
+        self._metrics.record_turn(speaker, duration_ms=0.0)
 
     def get_worker_output(self, speaker: str) -> asyncio.Queue | None:
         worker = self._workers.get(speaker)

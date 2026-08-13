@@ -165,6 +165,12 @@ class StreamingPipeline:
         self._tool_registry = get_builtin_tools()
         self._audio_queue: asyncio.Queue[PipelineMessage] = asyncio.Queue(512)
         self._output_queue: asyncio.Queue[PipelineMessage] = asyncio.Queue(512)
+        # Per-session output queues. The global _output_queue is shared and a
+        # single pump_output per client would race other clients for the same
+        # messages (dropping events for unrelated sessions). Each websocket /
+        # webrtc session consumes its OWN queue so audio and events can never
+        # be stolen by another client.
+        self._session_outputs: dict[str, asyncio.Queue[PipelineMessage]] = {}
         self._interrupt_events: dict[str, asyncio.Event] = {}
         self._tasks: list[asyncio.Task] = []
         self._current_tasks: dict[str, asyncio.Task] = {}
@@ -284,6 +290,7 @@ class StreamingPipeline:
         self._memories[session_id] = memory
         self._retrievals[session_id] = retrieval
         self._facts[session_id] = facts or FactMemory()
+        self._session_output(session_id)
         try:
             asyncio.create_task(
                 asyncio.to_thread(retrieval.warm_up)
@@ -295,6 +302,10 @@ class StreamingPipeline:
         self._memories.pop(session_id, None)
         self._retrievals.pop(session_id, None)
         self._facts.pop(session_id, None)
+        # Discard the session's output queue so a dead client's backlog can't
+        # leak into anything else. _session_output() lazily recreates it if the
+        # session id is reused.
+        self._session_outputs.pop(session_id, None)
         self._last_fact_extract.pop(session_id, None)
         self._contexts.pop(session_id, None)
         self._topic_trackers.pop(session_id, None)
@@ -338,9 +349,30 @@ class StreamingPipeline:
         logger.info(f"interrupt signaled for session {session_id}")
 
     async def output_stream(self) -> AsyncGenerator[PipelineMessage, None]:
+        """Legacy global output stream (used by the CLI)."""
         while self._running or not self._output_queue.empty():
             try:
                 msg = await asyncio.wait_for(self._output_queue.get(), timeout=0.1)
+                yield msg
+            except asyncio.TimeoutError:
+                continue
+
+    def _session_output(self, session_id: str) -> asyncio.Queue[PipelineMessage]:
+        q = self._session_outputs.get(session_id)
+        if q is None:
+            q = asyncio.Queue(maxsize=2048)
+            self._session_outputs[session_id] = q
+        return q
+
+    async def output_stream_for(
+        self, session_id: str
+    ) -> AsyncGenerator[PipelineMessage, None]:
+        """Per-session output stream — each client gets its own queue so no
+        other session can consume (and drop) its events or audio."""
+        q = self._session_output(session_id)
+        while self._running or not q.empty():
+            try:
+                msg = await asyncio.wait_for(q.get(), timeout=0.1)
                 yield msg
             except asyncio.TimeoutError:
                 continue
@@ -1429,10 +1461,15 @@ class StreamingPipeline:
                     self._playback_active[session_id] = True
                     wav = self._pcm_to_wav(audio_data, sr)
 
-                    # Emit with speaker info
-                    await self._output_queue.put(PipelineMessage(
-                        PipelineEvent.TTS_CHUNK, wav, session_id
-                    ))
+                    # Emit with speaker info (per-session queue so audio can't
+                    # be stolen by another client's pump_output).
+                    q = self._session_outputs.get(session_id) or self._output_queue
+                    try:
+                        q.put_nowait(PipelineMessage(
+                            PipelineEvent.TTS_CHUNK, wav, session_id
+                        ))
+                    except asyncio.QueueFull:
+                        pass
                 elif len(audio_data) == 0:
                     # Sentence end signal
                     pass
@@ -1844,10 +1881,12 @@ class StreamingPipeline:
         session_id: str = "default",
     ) -> None:
         # Use put_nowait: a slow/dead client must never stall the pipeline for
-        # every session. A full queue (maxsize=512) means the consumer is stuck,
-        # so dropping is the right backpressure here — blocking would deadlock
-        # all sessions on a single queue.
+        # every session. A full queue means the consumer is stuck, so dropping
+        # is the right backpressure here — blocking would deadlock all sessions
+        # on a single queue. Events route to the session's own queue when one
+        # is registered (ws/webrtc), else the global queue (CLI).
+        q = self._session_outputs.get(session_id) or self._output_queue
         try:
-            self._output_queue.put_nowait(PipelineMessage(event, data, session_id))
+            q.put_nowait(PipelineMessage(event, data, session_id))
         except asyncio.QueueFull:
             logger.warning(f"output queue full, dropping {event}")

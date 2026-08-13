@@ -47,7 +47,7 @@ async def audio_websocket(websocket: WebSocket):
     async def pump_output():
         interrupted = False
         try:
-            async for msg in pipeline.output_stream():
+            async for msg in pipeline.output_stream_for(session_id):
                 try:
                     if msg.session_id != session_id:
                         continue
