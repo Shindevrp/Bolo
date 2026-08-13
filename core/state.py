@@ -59,6 +59,7 @@ class SessionState:
     topic: str = ""
     intent: str = "statement"
     metadata: dict[str, Any] = field(default_factory=dict)
+    active_speaker: str = ""
 
     def update(self, ctx: Any) -> None:
         """Sync the session with a ConversationContext (topic/intent)."""

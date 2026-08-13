@@ -68,3 +68,65 @@ class CoreConfig:
     default_timeout: float = 30.0
     default_language: str = "en"
     session_timeout: float = 300.0
+
+    # Multi-speaker
+    multi_speaker_enabled: bool = field(
+        default_factory=lambda: os.getenv("TASA_MULTI_SPEAKER", "0") == "1"
+    )
+    speaker_1_name: str = field(
+        default_factory=lambda: os.getenv("TASA_SPEAKER_1_NAME", "Sh")
+    )
+    speaker_1_voice: str = field(
+        default_factory=lambda: os.getenv(
+            "TASA_SPEAKER_1_VOICE",
+            "/app/models/piper/en_GB-alan-low.onnx",
+        )
+    )
+    speaker_2_name: str = field(
+        default_factory=lambda: os.getenv("TASA_SPEAKER_2_NAME", "Ti")
+    )
+    speaker_2_voice: str = field(
+        default_factory=lambda: os.getenv(
+            "TASA_SPEAKER_2_VOICE",
+            "/app/models/piper/en_US-kristin-medium.onnx",
+        )
+    )
+    speaker_1_personality: str = field(
+        default_factory=lambda: os.getenv(
+            "TASA_SPEAKER_1_PERSONALITY",
+            "thoughtful, analytical, warm British wit",
+        )
+    )
+    speaker_1_style: str = field(
+        default_factory=lambda: os.getenv(
+            "TASA_SPEAKER_1_STYLE",
+            "calm, measured, dry humor, uses precise language",
+        )
+    )
+    speaker_2_personality: str = field(
+        default_factory=lambda: os.getenv(
+            "TASA_SPEAKER_2_PERSONALITY",
+            "energetic, curious, optimistic American",
+        )
+    )
+    speaker_2_style: str = field(
+        default_factory=lambda: os.getenv(
+            "TASA_SPEAKER_2_STYLE",
+            "enthusiastic, expressive, asks great questions, warm",
+        )
+    )
+    interrupt_mode: str = field(
+        default_factory=lambda: os.getenv("TASA_INTERRUPT_MODE", "sentence")
+    )
+    interrupt_urgency_threshold: float = field(
+        default_factory=lambda: float(os.getenv("TASA_INTERRUPT_URGENCY_THRESHOLD", "0.7"))
+    )
+    max_consecutive_turns: int = field(
+        default_factory=lambda: int(os.getenv("TASA_MAX_CONSECUTIVE_TURNS", "2"))
+    )
+    overlap_ms: int = field(
+        default_factory=lambda: int(os.getenv("TASA_OVERLAP_MS", "200"))
+    )
+    inter_speaker_pause_ms: int = field(
+        default_factory=lambda: int(os.getenv("TASA_INTER_SPEAKER_PAUSE_MS", "400"))
+    )

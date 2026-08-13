@@ -1,0 +1,24 @@
+# GPU override for the quick demo. Gives the LLM (Ollama) GPU acceleration
+# and a bigger STT model. Requires Docker + nvidia-container-toolkit.
+#
+#   docker compose -f docker-compose.demo.yml -f docker-compose.demo.gpu.yml up
+#
+# Without the toolkit this file fails on purpose rather than silently
+# running the LLM on CPU.
+
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      OLLAMA_GPU_LAYERS: "100"
+
+  tasa:
+    environment:
+      TASA_STT_MODEL: base
+      TASA_STT_COMPUTE: int8

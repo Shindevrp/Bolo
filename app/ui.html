@@ -30,6 +30,8 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
 .msg .lbl{font-size:.6rem;font-weight:600;text-transform:uppercase;margin-right:6px;letter-spacing:.5px}
 .msg.user .lbl{color:#3B82F6}
 .msg.assistant .lbl{color:#10B981}
+.msg.assistant[data-speaker="Sh"] .lbl{color:#60A5FA}
+.msg.assistant[data-speaker="Ti"] .lbl{color:#F472B6}
 .msg.system .lbl{color:#F59E0B}
 .msg .txt{color:rgba(255,255,255,.7)}
 .msg.user .txt{color:rgba(255,255,255,.85)}
@@ -107,14 +109,17 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
   function err(t){er.textContent=t;setTimeout(function(){if(er.textContent===t)er.textContent='';},5000);}
   function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
   function sts(cl,t){d.className='vc-dot'+(cl?' '+cl:'');l.textContent=t;}
-  function addMsg(role,text,append){
+  var _speakerLabels={'Sh':'Sh','Ti':'Ti'};
+  function addMsg(role,text,append,speaker){
     var box=mode==='hybrid'?c:c;
     var empty=box.querySelector('.empty-state');
     if(empty)empty.remove();
-    if(!append||!box.lastElementChild||box.lastElementChild.className.indexOf('msg '+role)===-1){
+    var lbl=role==='user'?'You':role==='assistant'?(_speakerLabels[speaker]||'TASA'):'System';
+    if(!append||!box.lastElementChild||box.lastElementChild.className.indexOf('msg '+role)===-1||(speaker&&box.lastElementChild.getAttribute('data-speaker')!==speaker)){
       var el=document.createElement('div');
       el.className='msg '+role;
-      el.innerHTML='<span class="lbl">'+(role==='user'?'You':role==='assistant'?'TASA':'System')+'</span><span class="txt">'+esc(text)+'</span>';
+      if(speaker)el.setAttribute('data-speaker',speaker);
+      el.innerHTML='<span class="lbl">'+lbl+'</span><span class="txt">'+esc(text)+'</span>';
       box.appendChild(el);
     }else{
       var last=box.lastElementChild;
@@ -215,7 +220,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
           else if(m.type==='transcript'){addMsg('user',m.text);dbg('You: '+m.text.slice(0,40));}
           else if(m.type==='llm_token'){
             if(!c.querySelector('.msg.assistant')){sts('talk','Speaking...');dbg('TASA responding...');}
-            addMsg('assistant',m.token,true);
+            addMsg('assistant',m.token,true,m.speaker||'');
           }
           else if(m.type==='llm_done'){sts('','Done');dbg('Response complete');}
           else if(m.type==='tts_done'){if(act)sts('on','Listening...');dbg('TTS done');}

@@ -26,7 +26,7 @@
 <span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">TOOLS</span>
 </p>
 </div>
-<div style="padding:14px 28px; background:#010409; border-top:1px solid #21262d; font-family:'Fira Code',ui-monospace,monospace; font-size:12px; color:#8b949e;"><span style="color:#58a6ff;">~600ms</span> first audio &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">&lt;2s</span> full response &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">179</span> tests passing &nbsp;&middot;&nbsp; barge-in &amp; backchannel native</div>
+<div style="padding:14px 28px; background:#010409; border-top:1px solid #21262d; font-family:'Fira Code',ui-monospace,monospace; font-size:12px; color:#8b949e;"><span style="color:#58a6ff;">~350ms</span> first audio &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">&lt;700ms</span> full response &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">179</span> tests passing &nbsp;&middot;&nbsp; barge-in &amp; backchannel native</div>
 </div>
 </div>
 
@@ -432,14 +432,48 @@ ollama serve &
 export TASA_LLM_URL=http://localhost:11434/v1
 export TASA_LLM_MODEL=qwen3:8b
 
-# On a machine WITHOUT a GPU, point STT + VAD at the CPU too, otherwise
-# startup fails trying to load them onto cuda:
-export TASA_STT_DEVICE=cpu
-export TASA_STT_COMPUTE=int8
-export TASA_VAD_DEVICE=cpu
-
 python3 -m app.cli server
 ```
+
+> STT / VAD / emotion devices default to `auto` — they use CUDA when a GPU is
+> present and fall back to CPU otherwise. Set `TASA_STT_DEVICE=cpu` (plus
+> `TASA_STT_COMPUTE=int8`) explicitly only if you want to force CPU.
+
+### Quick Demo (one command, no GPU)
+
+The fastest way to see TASA working: a self-contained stack that runs the app,
+a small Ollama LLM, and the live dashboard. No GPU, no manual env setup.
+
+```bash
+# Builds TASA, starts Ollama, pulls qwen2.5:3b, launches everything
+docker compose -f docker-compose.demo.yml up
+
+# Open:
+#   Voice UI:        http://localhost:8000/ui     (WebSocket)
+#   Voice UI (RTP):  http://localhost:8000/webrtc (WebRTC)
+#   Live dashboard:  http://localhost:8501        (Streamlit)
+#   Ollama API:      http://localhost:11435/v1
+```
+
+**GPU?** Add the GPU override so the LLM runs on CUDA (requires Docker +
+[nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)):
+
+```bash
+docker compose -f docker-compose.demo.yml -f docker-compose.demo.gpu.yml up
+```
+
+**Customize** via `TASA_DEMO_*` env vars (so a machine-local `.env` can't break the demo):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TASA_DEMO_LLM_MODEL` | `qwen2.5:3b` | Ollama model pulled + used (e.g. `qwen2.5:1.5b` on weak machines) |
+| `TASA_DEMO_STT_MODEL` | `tiny` | faster-whisper model size |
+
+**Requirements:** Docker Engine 24+ with Compose v2, ~8 GB free RAM, ~6 GB disk
+for images/models. First run is slow (image build + model downloads); later
+starts are fast. The LLM is the latency driver: on CPU expect a few seconds per
+response, on GPU (override) ~100–300 ms. Stop with
+`docker compose -f docker-compose.demo.yml down`.
 
 ### Docker (Full Stack, GPU)
 
@@ -507,7 +541,7 @@ sequenceDiagram
     P->>M: store user + assistant turns
     M->>M: token estimate > threshold -> compress oldest turns
     P->>R: store assistant answer (topic-tagged)
-    Note over U,X: First audio ~600ms typical, full response under 2s
+    Note over U,X: First audio ~350ms typical, full response under 700ms
 ```
 
 ---
@@ -743,11 +777,15 @@ LLM first token:                 < 50ms  (already streaming)
 LLM token → Sentence TTS:        < 50ms  (chunker + prosody, overlapped)
 TTS → Speaker:                   < 50ms
 Response delay:                  50–600ms (human pacing)
-LLM last token → TTS done:       < 2s    (overlapped with TTS)
+LLM last token → TTS done:       < 700ms (overlapped with TTS)
 ---------------------------------------
-Total E2E (first audio):         ~600ms typical (speculative + overlap)
-Total E2E (full response):       < 2s
+Total E2E (first audio):         ~350ms typical (speculative + overlap)
+Total E2E (full response):       < 700ms
 ```
+
+> Measured Aug 2026 on a local GPU stack (qwen2.5:3b on GPU, whisper tiny + Piper
+> on CPU): first audio p50 ≈ 350ms / p95 ≈ 640ms; full response p50 ≈ 410ms /
+> p95 ≈ 640ms.
 
 ---
 

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 from urllib.request import urlopen
 
 import streamlit as st
 
 st.set_page_config(page_title="TASA", layout="wide")
 
-BACKEND = "http://localhost:8000"
+BACKEND = os.getenv("TASA_BACKEND_URL", "http://localhost:8000")
+UI_URL = os.getenv("TASA_UI_URL", BACKEND)
 
 
 def fetch_sessions() -> list[dict]:
@@ -59,4 +61,4 @@ def session_status() -> None:
 
 session_status()
 
-st.iframe(f"{BACKEND}/ui", height=800)
+st.iframe(f"{UI_URL}/ui", height=800)

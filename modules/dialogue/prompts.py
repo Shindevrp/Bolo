@@ -76,6 +76,7 @@ def build_system_prompt(
     turn_count: int = 0,
     has_context: bool = False,
     complexity: str = "standard",
+    user_profile_block: str = "",
 ) -> str:
     parts = [SYSTEM_PROMPT_BASE]
 
@@ -106,5 +107,8 @@ def build_system_prompt(
             " Some context from earlier conversation is provided. "
             "Use it naturally if relevant."
         )
+
+    if user_profile_block:
+        parts.append(f"\n\n{user_profile_block}")
 
     return "".join(parts)

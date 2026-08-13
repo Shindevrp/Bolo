@@ -8,7 +8,8 @@ WORKDIR /build
 
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir ".[all]"
+    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchaudio && \
+    pip install --no-cache-dir ".[all,dashboard]"
 
 
 FROM python:3.12-slim
@@ -27,6 +28,7 @@ COPY core/ core/
 COPY modules/ modules/
 COPY providers/ providers/
 COPY utils/ utils/
+COPY streamlit_app.py ./
 
 ENV TASA_STT_MODEL=base
 ENV TASA_STT_DEVICE=cpu
@@ -38,16 +40,22 @@ ENV TASA_VAD_THRESHOLD=0.5
 
 RUN mkdir -p /app/models/piper && python3 <<EOF
 import urllib.request, pathlib
-url = 'https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx'
-cfg = url + '.json'
-dest = pathlib.Path('/app/models/piper/en_US-lessac-medium.onnx')
-if not dest.exists():
-    print('Downloading Piper voice model...')
-    urllib.request.urlretrieve(url, dest)
-    urllib.request.urlretrieve(cfg, dest.with_suffix('.onnx.json'))
-    print('Piper model downloaded.')
-else:
-    print('Piper model already exists.')
+voices = {
+    'en_US-lessac-medium': 'https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx',
+    'en_GB-alan-low': 'https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alan/low/en_GB-alan-low.onnx',
+    'en_US-kristin-medium': 'https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/kristin/medium/en_US-kristin-medium.onnx',
+}
+dest_dir = pathlib.Path('/app/models/piper')
+for name, url in voices.items():
+    onnx = dest_dir / f'{name}.onnx'
+    cfg = dest_dir / f'{name}.onnx.json'
+    if not onnx.exists():
+        print(f'Downloading {name}...')
+        urllib.request.urlretrieve(url, onnx)
+        urllib.request.urlretrieve(url + '.json', cfg)
+        print(f'{name} downloaded.')
+    else:
+        print(f'{name} already exists.')
 EOF
 
 EXPOSE 8000

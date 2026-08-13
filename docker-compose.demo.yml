@@ -1,0 +1,95 @@
+name: tasa-demo
+
+# One-command CPU-first demo. Runs anywhere Docker does (no GPU required).
+# On a machine with a GPU + nvidia-container-toolkit, add the GPU override:
+#   docker compose -f docker-compose.demo.yml -f docker-compose.demo.gpu.yml up
+#
+# Customize with TASA_DEMO_* env vars (not TASA_*: those are for the TASA app
+# itself and this stack pins them so a machine-local .env can't break the demo):
+#   TASA_DEMO_LLM_MODEL  Ollama model tag to pull+use          (default qwen2.5:3b)
+#   TASA_DEMO_STT_MODEL  faster-whisper model size             (default tiny)
+
+services:
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: tasa-demo-ollama
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+    restart: unless-stopped
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: tasa-demo-ollama-pull
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    command: ["pull", "${TASA_DEMO_LLM_MODEL:-qwen2.5:3b}"]
+    restart: "no"
+
+  tasa:
+    build: .
+    image: tasa-demo:local
+    container_name: tasa-demo-app
+    depends_on:
+      ollama-pull:
+        condition: service_completed_successfully
+    environment:
+      TASA_LLM_URL: http://ollama:11434/v1
+      TASA_LLM_MODEL: ${TASA_DEMO_LLM_MODEL:-qwen2.5:3b}
+      TASA_STT_MODEL: ${TASA_DEMO_STT_MODEL:-tiny}
+      TASA_STT_DEVICE: auto
+      TASA_STT_COMPUTE: int8
+      TASA_VAD_DEVICE: auto
+      TASA_VAD_THRESHOLD: "0.5"
+      TASA_EMOTION_ENABLED: "0"
+      TASA_TTS_MODEL: /app/models/piper/en_US-lessac-medium.onnx
+    ports:
+      - "8000:8000"
+    volumes:
+      - model_cache:/root/.cache
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 120s
+    restart: unless-stopped
+
+  dashboard:
+    build: .
+    image: tasa-demo:local
+    container_name: tasa-demo-dashboard
+    depends_on:
+      tasa:
+        condition: service_healthy
+    environment:
+      TASA_BACKEND_URL: http://tasa:8000
+      TASA_UI_URL: http://localhost:8000
+    command:
+      - "streamlit"
+      - "run"
+      - "streamlit_app.py"
+      - "--server.address"
+      - "0.0.0.0"
+      - "--server.port"
+      - "8501"
+      - "--server.headless"
+      - "true"
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+  model_cache:

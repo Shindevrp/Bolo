@@ -5,6 +5,10 @@ import math
 import random
 
 from modules.tools.registry import ToolRegistry, ToolSpec
+from modules.tools.weather import get_weather
+from modules.tools.web_search import search_web
+from modules.tools.news import get_news
+from modules.tools.reminder import set_reminder
 
 
 def _get_time() -> str:
@@ -45,6 +49,7 @@ def get_builtin_tools() -> ToolRegistry:
         description="Get the current time",
         parameters={"properties": {}},
         handler=_get_time,
+        proactive_hint="If the user asks about the time or what time it is, use this tool.",
     ))
 
     registry.register(ToolSpec(
@@ -52,6 +57,7 @@ def get_builtin_tools() -> ToolRegistry:
         description="Get today's date",
         parameters={"properties": {}},
         handler=_get_date,
+        proactive_hint="If the user asks about the date or what day it is, use this tool.",
     ))
 
     registry.register(ToolSpec(
@@ -63,6 +69,7 @@ def get_builtin_tools() -> ToolRegistry:
             },
         },
         handler=_calculate,
+        proactive_hint="If the user asks you to calculate or compute something mathematical, use this tool.",
     ))
 
     registry.register(ToolSpec(
@@ -74,6 +81,55 @@ def get_builtin_tools() -> ToolRegistry:
             },
         },
         handler=_roll_dice,
+    ))
+
+    registry.register(ToolSpec(
+        name="get_weather",
+        description="Get current weather for a city",
+        parameters={
+            "properties": {
+                "city": {"description": "city name to get weather for"},
+            },
+        },
+        handler=get_weather,
+        proactive_hint="the user asks about weather, temperature, rain, sun, or how hot/cold it is somewhere — ALWAYS use get_weather, never search_web for weather.",
+    ))
+
+    registry.register(ToolSpec(
+        name="search_web",
+        description="Search the web for information",
+        parameters={
+            "properties": {
+                "query": {"description": "search query"},
+            },
+        },
+        handler=search_web,
+        proactive_hint="the user asks for a fact, a general question you're unsure about, or specific information like a person, event, or topic — use for general web search.",
+    ))
+
+    registry.register(ToolSpec(
+        name="get_news",
+        description="Get top news headlines",
+        parameters={
+            "properties": {
+                "category": {"description": "news category: general, tech, science, or business"},
+            },
+        },
+        handler=get_news,
+        proactive_hint="the user asks about news, headlines, or what's happening in the world — use this instead of search_web.",
+    ))
+
+    registry.register(ToolSpec(
+        name="set_reminder",
+        description="Set a reminder for later",
+        parameters={
+            "properties": {
+                "text": {"description": "what to be reminded about"},
+                "minutes": {"description": "minutes from now (default 5)"},
+            },
+        },
+        handler=set_reminder,
+        proactive_hint="If the user asks to be reminded about something later, use this tool.",
     ))
 
     return registry
