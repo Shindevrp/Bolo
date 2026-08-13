@@ -60,6 +60,10 @@ class SpeakerTTSWorker:
         self._total_bytes = 0
         self._first_emit = None
         self._spoken = []
+        # Drop any items that piled up while the worker was dead (e.g. chunks
+        # queued for a hard-interrupted speaker) so they can't replay as stale
+        # audio at the start of a new turn.
+        self.queue.clear_nowait()
         self._task = asyncio.create_task(self._run(), name=f"tts_worker_{self.speaker}")
 
     async def stop(self) -> None:
@@ -147,12 +151,17 @@ class SpeakerTTSWorker:
                 self.queue.busy = False
 
                 if should_pause:
-                    # Emit a sentence-end signal so the next speaker can start
+                    # Emit a sentence-end signal so the next speaker can start.
                     await self._output_queue.put(
                         (self.speaker, b"", False)  # Empty = sentence end
                     )
+                    # Clear the pause flag and KEEP RUNNING: the worker must stay
+                    # alive so this speaker can resume if the LLM gives it more
+                    # text later in the same turn. Breaking here would leave any
+                    # queued chunks unsynthesized and leak stale audio into the
+                    # next turn's start().
                     self._pause_event.clear()
-                    break
+                    continue
 
         except asyncio.CancelledError:
             pass

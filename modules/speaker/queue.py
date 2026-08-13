@@ -129,6 +129,14 @@ class SpeakerQueue:
             except asyncio.QueueEmpty:
                 break
 
+    def clear_nowait(self) -> None:
+        """Remove all items synchronously (for sync callers)."""
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
     @staticmethod
     async def _drain_queue(queue: asyncio.Queue) -> None:
         while True:

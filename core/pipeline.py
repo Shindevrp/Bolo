@@ -861,8 +861,13 @@ class StreamingPipeline:
                     )
                     if spec_full is not None:
                         used_speculation = True
-                except (asyncio.TimeoutError, asyncio.CancelledError):
+                except asyncio.TimeoutError:
                     pass
+                except asyncio.CancelledError:
+                    # This task was cancelled by a new turn starting — propagate
+                    # so the old turn aborts instead of continuing and producing
+                    # a second response.
+                    raise
 
             if not used_speculation:
                 if spec_task and not spec_task.done():
@@ -910,7 +915,9 @@ class StreamingPipeline:
                         asyncio.shield(emotion_task),
                         timeout=self._emotion.timeout,
                     )
-                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                except asyncio.TimeoutError:
+                    pass
+                except Exception:
                     pass
 
             # ---- Parallel LLM → chunker → priority queue → TTS worker ----
@@ -1152,9 +1159,9 @@ class StreamingPipeline:
             if tail:
                 await push(1, self._tool_registry.strip_calls(tail))
 
-            # Single-speaker: emit LLM done here (multi-speaker emits in streaming method)
-            if not (self._speaker_coordinator and self._speaker_coordinator.enabled):
-                await self._emit(PipelineEvent.LLM_DONE, full, session_id)
+            # Emit LLM done for both single- and multi-speaker so clients finalize
+            # the turn (session.add_ai_turn + UI status) and memory is recorded.
+            await self._emit(PipelineEvent.LLM_DONE, full, session_id)
 
             # End-of-stream sentinel (lowest priority: drained last)
             text_queue.put_nowait((2, next(seq), None, None, None))
@@ -1357,8 +1364,13 @@ class StreamingPipeline:
         # Wait for merger to finish
         try:
             await asyncio.wait_for(merger_task, timeout=5.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except asyncio.TimeoutError:
             merger_task.cancel()
+        except asyncio.CancelledError:
+            # Turn was cancelled by a new turn starting — cancel the merger and
+            # propagate so the caller aborts cleanly.
+            merger_task.cancel()
+            raise
 
         # Log metrics
         logger.info(coordinator._metrics.to_debug_log())
@@ -1831,7 +1843,11 @@ class StreamingPipeline:
         data: str | bytes | None = None,
         session_id: str = "default",
     ) -> None:
+        # Use put_nowait: a slow/dead client must never stall the pipeline for
+        # every session. A full queue (maxsize=512) means the consumer is stuck,
+        # so dropping is the right backpressure here — blocking would deadlock
+        # all sessions on a single queue.
         try:
-            await self._output_queue.put(PipelineMessage(event, data, session_id))
+            self._output_queue.put_nowait(PipelineMessage(event, data, session_id))
         except asyncio.QueueFull:
             logger.warning(f"output queue full, dropping {event}")
