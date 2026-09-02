@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from urllib.request import urlopen
 
 import streamlit as st
@@ -56,6 +57,9 @@ def session_status() -> None:
         f"{session.get('engagement_score', 0):.2f}",
     )
     st.write("User turns:", session.get("total_user_turns", 0))
+    st.write("AI turns:", session.get("total_ai_turns", 0))
+    last = session.get("last_activity", 0)
+    st.write("Last activity:", f"{max(0, time.time() - last):.0f}s ago")
     st.write("Session:", session.get("session_id", "—"))
 
 

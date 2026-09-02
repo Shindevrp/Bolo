@@ -167,6 +167,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
         else if(m.type==='llm_done'){sts('','Done');dbg('Response complete');}
         else if(m.type==='tts_done'){sts('on','Listening...');dbg('TTS done, listening');}
         else if(m.type==='backchannel'){dbg('TASA: '+m.text);}
+        else if(m.type==='prosody'){dbg('Tone: '+m.label+((m.emotion)?' ['+m.emotion+']':''));}
         else if(m.type==='interrupt'){duckAudio();sts('on','Listening...');dbg('Interruption detected');}
         else if(m.type==='status'){dbg(m.text);}
         else if(m.type==='error'){err(m.text);}

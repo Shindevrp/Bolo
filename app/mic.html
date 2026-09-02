@@ -72,7 +72,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:transparent;displ
         dbg('AudioContext default rate');
       }
       sc=ac.createMediaStreamSource(s);
-      pr=ac.createScriptProcessor(4096,1,1);
+      pr=ac.createScriptProcessor(1024,1,1);
       sc.connect(pr);
       var gag=ac.createGain();gag.gain.value=0;pr.connect(gag);gag.connect(ac.destination);
       dbg('Connecting WS...');
@@ -146,6 +146,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:transparent;displ
         else if(m.type==='tts_done'){sts('on','Listening...');}
           else if(m.type==='interrupt'){duckAudio();sts('on','Listening...');dbg('Interruption detected');}
         else if(m.type==='backchannel'){dbg('Backchannel: '+m.text);}
+        else if(m.type==='prosody'){dbg('Tone: '+m.label+((m.emotion)?' ['+m.emotion+']':''));}
         }catch(x){dbg('Msg err: '+x.message);}
       };
       ws.onerror=function(e){dbg('WS error');sts('','Connection error');};

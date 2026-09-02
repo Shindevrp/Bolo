@@ -20,5 +20,6 @@ async def metrics(request: Request):
 
     if pipeline:
         result["latency"] = pipeline.latency_report()
+        result["prosody"] = pipeline.prosody_snapshot()
 
     return result

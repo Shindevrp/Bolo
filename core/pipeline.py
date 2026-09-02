@@ -34,19 +34,6 @@ from modules.memory.facts import (
 )
 from core.state import DialogueState
 from modules.dialogue.prompts import build_system_prompt
-from modules.speaker.coordinator import SpeakerCoordinator
-from modules.speaker.prompt_builder import build_multi_speaker_prompt
-from modules.speaker.parser import SpeakerTokenParser, ParsedChunk
-from modules.speaker.queue import SpeakerQueue
-from modules.speaker.tts_worker import SpeakerTTSWorker
-from modules.speaker.interrupt_policy import InterruptPolicy, InterruptStyle, InterruptType
-from modules.speaker.urgency import score_urgency
-from modules.speaker.mixer import AudioMixer, MixerEvent
-from modules.speaker.stream_state import StreamState
-from modules.speaker.speaker_predictor import SpeakerPredictor
-from modules.speaker.resume import ResumeManager
-from modules.speaker.metrics import SpeakerMetrics
-from modules.speaker.prosody_events import ProsodyEventGenerator, AdaptiveOverlapCalculator
 from modules.metrics.latency import LatencyTracker
 from modules.metrics.logger import MetricsLogger
 from modules.tools.registry import ToolRegistry
@@ -83,6 +70,7 @@ class PipelineEvent(Enum):
     TTS_CHUNK = auto()
     TTS_DONE = auto()
     BACKCHANNEL = auto()
+    PROSODY = auto()
     INTERRUPT = auto()
     RESPONSE_DELAY = auto()
     ERROR = auto()
@@ -93,6 +81,7 @@ class PipelineMessage:
     event: PipelineEvent
     data: str | bytes | None = None
     session_id: str = "default"
+    generation: int = 0
 
 
 @dataclass
@@ -114,7 +103,6 @@ class ConversationContext:
     prev_intent: str = ""
     user_sentiment: str = "neutral"
     user_repeated: bool = False
-    active_speaker: str = ""
 
 
 class StreamingPipeline:
@@ -131,7 +119,6 @@ class StreamingPipeline:
         backchannel_generator: BackchannelGenerator | None = None,
         backchannel_timing: BackchannelTiming | None = None,
         emotion_classifier: EmotionClassifier | None = None,
-        speaker_coordinator: SpeakerCoordinator | None = None,
     ) -> None:
         self.stt = stt
         self.llm = llm
@@ -153,18 +140,18 @@ class StreamingPipeline:
         self.compress_at_tokens = 1500
         self.compress_batch = 8
         self.intent_classifier = IntentClassifier()
-        self._speaker_coordinator = speaker_coordinator
-        self._token_parser: SpeakerTokenParser | None = None
-        self._speaker_workers: dict[str, SpeakerTTSWorker] = {}
-        self._speaker_queues: dict[str, SpeakerQueue] = {}
-        self._mixer: AudioMixer | None = None
-        self._mixer_task: asyncio.Task | None = None
 
         self._latency = LatencyTracker()
         self._metrics = MetricsLogger()
         self._tool_registry = get_builtin_tools()
         self._audio_queue: asyncio.Queue[PipelineMessage] = asyncio.Queue(512)
         self._output_queue: asyncio.Queue[PipelineMessage] = asyncio.Queue(512)
+        # Per-session output queues. The global _output_queue is shared and a
+        # single pump_output per client would race other clients for the same
+        # messages (dropping events for unrelated sessions). Each websocket /
+        # webrtc session consumes its OWN queue so audio and events can never
+        # be stolen by another client.
+        self._session_outputs: dict[str, asyncio.Queue[PipelineMessage]] = {}
         self._interrupt_events: dict[str, asyncio.Event] = {}
         self._tasks: list[asyncio.Task] = []
         self._current_tasks: dict[str, asyncio.Task] = {}
@@ -183,6 +170,9 @@ class StreamingPipeline:
         self._barge_frames: dict[str, int] = {}
         self._low_energy_frames: dict[str, int] = {}
         self._interrupt_handlers: dict[str, InterruptHandler] = {}
+        self._generations: dict[str, int] = {}
+        self._tts_workers: dict[str, asyncio.Task] = {}
+        self._prosody_meta: dict[str, dict[str, str]] = {}
         self._running = False
         self._contexts: dict[str, ConversationContext] = {}
         self._memories: dict[str, SessionMemory] = {}
@@ -198,6 +188,16 @@ class StreamingPipeline:
         if session_id not in self._interrupt_events:
             self._interrupt_events[session_id] = asyncio.Event()
         return self._interrupt_events[session_id]
+
+    def _generation(self, session_id: str) -> int:
+        return self._generations.get(session_id, 0)
+
+    def _bump_generation(self, session_id: str) -> None:
+        self._generations[session_id] = self._generation(session_id) + 1
+
+    def stale_event(self, session_id: str, msg: PipelineMessage) -> bool:
+        """True when msg belongs to an interrupted, superseded generation."""
+        return msg.generation != self._generation(session_id)
 
     def _interrupt_handler(self, session_id: str) -> InterruptHandler:
         handler = self._interrupt_handlers.get(session_id)
@@ -284,6 +284,7 @@ class StreamingPipeline:
         self._memories[session_id] = memory
         self._retrievals[session_id] = retrieval
         self._facts[session_id] = facts or FactMemory()
+        self._session_output(session_id)
         try:
             asyncio.create_task(
                 asyncio.to_thread(retrieval.warm_up)
@@ -295,6 +296,10 @@ class StreamingPipeline:
         self._memories.pop(session_id, None)
         self._retrievals.pop(session_id, None)
         self._facts.pop(session_id, None)
+        # Discard the session's output queue so a dead client's backlog can't
+        # leak into anything else. _session_output() lazily recreates it if the
+        # session id is reused.
+        self._session_outputs.pop(session_id, None)
         self._last_fact_extract.pop(session_id, None)
         self._contexts.pop(session_id, None)
         self._topic_trackers.pop(session_id, None)
@@ -306,6 +311,11 @@ class StreamingPipeline:
             compress_task.cancel()
         self._interrupt_events.pop(session_id, None)
         self._current_tasks.pop(session_id, None)
+        self._generations.pop(session_id, None)
+        self._prosody_meta.pop(session_id, None)
+        tts_worker = self._tts_workers.pop(session_id, None)
+        if tts_worker and not tts_worker.done():
+            tts_worker.cancel()
         self._playback_active.pop(session_id, None)
         self._playback_onset.pop(session_id, None)
         self._echo_floor.pop(session_id, None)
@@ -326,9 +336,17 @@ class StreamingPipeline:
     async def signal_interrupt(self, session_id: str = "default") -> None:
         ev = self._int_event(session_id)
         ev.set()
+        self._bump_generation(session_id)
         task = self._current_tasks.get(session_id)
         if task and not task.done():
             task.cancel()
+        tts_worker = self._tts_workers.get(session_id)
+        if tts_worker and not tts_worker.done():
+            tts_worker.cancel()
+            try:
+                await tts_worker
+            except (asyncio.CancelledError, Exception):
+                pass
         self._playback_active[session_id] = False
         self._playback_onset.pop(session_id, None)
         self._echo_floor.pop(session_id, None)
@@ -338,9 +356,30 @@ class StreamingPipeline:
         logger.info(f"interrupt signaled for session {session_id}")
 
     async def output_stream(self) -> AsyncGenerator[PipelineMessage, None]:
+        """Legacy global output stream (used by the CLI)."""
         while self._running or not self._output_queue.empty():
             try:
                 msg = await asyncio.wait_for(self._output_queue.get(), timeout=0.1)
+                yield msg
+            except asyncio.TimeoutError:
+                continue
+
+    def _session_output(self, session_id: str) -> asyncio.Queue[PipelineMessage]:
+        q = self._session_outputs.get(session_id)
+        if q is None:
+            q = asyncio.Queue(maxsize=2048)
+            self._session_outputs[session_id] = q
+        return q
+
+    async def output_stream_for(
+        self, session_id: str
+    ) -> AsyncGenerator[PipelineMessage, None]:
+        """Per-session output stream — each client gets its own queue so no
+        other session can consume (and drop) its events or audio."""
+        q = self._session_output(session_id)
+        while self._running or not q.empty():
+            try:
+                msg = await asyncio.wait_for(q.get(), timeout=0.1)
                 yield msg
             except asyncio.TimeoutError:
                 continue
@@ -503,6 +542,14 @@ class StreamingPipeline:
                 continue
 
             frame_energy = rms_energy(chunk) / 32768.0
+            if self._playback_active.get(sid, False):
+                floor = self._echo_floor.get(sid, 0.0)
+                if not is_speech:
+                    if frame_energy > floor:
+                        floor = 0.6 * floor + 0.4 * frame_energy
+                    else:
+                        floor = 0.85 * floor + 0.15 * frame_energy
+                    self._echo_floor[sid] = max(0.0, min(floor, 0.25))
             if is_speech and frame_energy < SILENCE_ENERGY_FLOOR:
                 low_count = self._low_energy_frames.get(sid, 0) + 1
                 self._low_energy_frames[sid] = low_count
@@ -559,6 +606,7 @@ class StreamingPipeline:
                         self._barge_thresholds[sid] = threshold
                         self._barge_frames[sid] = target_frames
                         self._interrupt_handler(sid).reset()
+                        await self._maybe_fire_barge(sid, ctx, frame_energy)
                     self._speaking[sid] = True
                     ctx.dialogue_state = DialogueState.LISTENING
                     self._silence_ms[sid] = 0.0
@@ -583,7 +631,11 @@ class StreamingPipeline:
                     assistant_responding = (
                         self._current_tasks.get(sid) is not None
                         and not self._current_tasks[sid].done()
-                        and ctx.dialogue_state == DialogueState.INTERRUPTIBLE
+                        and (
+                            ctx.dialogue_state
+                            == DialogueState.INTERRUPTIBLE
+                            or playback_on
+                        )
                     )
                     if (
                         not self._barge_pending.get(sid, False)
@@ -615,30 +667,7 @@ class StreamingPipeline:
                                 f" threshold={threshold:.3f}"
                             )
                     if self._barge_pending.get(sid, False):
-                        handler = self._interrupt_handler(sid)
-                        threshold = self._barge_thresholds.get(
-                            sid,
-                            self.interrupt_handler.speech_energy_threshold,
-                        )
-                        target_frames = self._barge_frames.get(
-                            sid,
-                            self.interrupt_handler.consecutive_speech_frames,
-                        )
-                        if handler.should_interrupt(
-                            energy,
-                            0.0,
-                            True,
-                            threshold=threshold,
-                            target_frames=target_frames,
-                        ):
-                            self._barge_pending[sid] = False
-                            self._barge_thresholds.pop(sid, None)
-                            self._barge_frames.pop(sid, None)
-                            await self.signal_interrupt(sid)
-                            ctx.dialogue_state = DialogueState.LISTENING
-                            await self._emit(
-                                PipelineEvent.INTERRUPT, session_id=sid
-                            )
+                        await self._maybe_fire_barge(sid, ctx, energy)
 
                 turn_decision = self.turn_detector.process_chunk(chunk, True)
 
@@ -746,6 +775,32 @@ class StreamingPipeline:
         overlap = len(set(words) & last_words) / len(words)
         return overlap >= 0.6
 
+    async def _maybe_fire_barge(
+        self, sid: str, ctx: ConversationContext, energy: float
+    ) -> None:
+        if not self._barge_pending.get(sid, False):
+            return
+        handler = self._interrupt_handler(sid)
+        threshold = self._barge_thresholds.get(
+            sid, self.interrupt_handler.speech_energy_threshold
+        )
+        target_frames = self._barge_frames.get(
+            sid, self.interrupt_handler.consecutive_speech_frames
+        )
+        if self._playback_active.get(sid, False):
+            threshold = max(
+                threshold, self._echo_floor.get(sid, 0.0) * ECHO_FLOOR_MARGIN
+            )
+        if handler.should_interrupt(
+            energy, 0.0, True, threshold=threshold, target_frames=target_frames
+        ):
+            self._barge_pending[sid] = False
+            self._barge_thresholds.pop(sid, None)
+            self._barge_frames.pop(sid, None)
+            await self.signal_interrupt(sid)
+            ctx.dialogue_state = DialogueState.LISTENING
+            await self._emit(PipelineEvent.INTERRUPT, session_id=sid)
+
     async def _process_speech_segment(
         self, audio_blob: bytes, session_id: str, ctx: ConversationContext
     ) -> None:
@@ -757,6 +812,7 @@ class StreamingPipeline:
             if clear_task and not clear_task.done():
                 clear_task.cancel()
             await self._emit(PipelineEvent.INTERRUPT, session_id=session_id)
+        self._bump_generation(session_id)
         int_ev = self._int_event(session_id)
         int_ev.clear()
         self._current_tasks[session_id] = asyncio.current_task()
@@ -861,8 +917,13 @@ class StreamingPipeline:
                     )
                     if spec_full is not None:
                         used_speculation = True
-                except (asyncio.TimeoutError, asyncio.CancelledError):
+                except asyncio.TimeoutError:
                     pass
+                except asyncio.CancelledError:
+                    # This task was cancelled by a new turn starting — propagate
+                    # so the old turn aborts instead of continuing and producing
+                    # a second response.
+                    raise
 
             if not used_speculation:
                 if spec_task and not spec_task.done():
@@ -910,7 +971,9 @@ class StreamingPipeline:
                         asyncio.shield(emotion_task),
                         timeout=self._emotion.timeout,
                     )
-                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                except asyncio.TimeoutError:
+                    pass
+                except Exception:
                     pass
 
             # ---- Parallel LLM → chunker → priority queue → TTS worker ----
@@ -920,7 +983,7 @@ class StreamingPipeline:
             stop_tts = asyncio.Event()
             tool_calls: list[dict[str, str]] = []
             first_chunk = True
-            current_speaker: str | None = None
+            self._prosody_meta.pop(session_id, None)
 
             def _prosody_for(text: str):
                 nonlocal first_chunk
@@ -938,28 +1001,34 @@ class StreamingPipeline:
                     intent=ctx.intent,
                     first_response=ctx.turn_count == 0,
                 )
+                if session_id not in self._prosody_meta:
+                    self._prosody_meta[session_id] = {
+                        "label": profile.label,
+                        "emotion": ctx.user_sentiment,
+                    }
                 first_chunk = False
                 return profile
 
-            async def push(priority: int, text: str, speaker: str | None = None) -> None:
+            async def push(priority: int, text: str) -> None:
                 text = sanitize_for_tts(text)
                 if not text.strip():
                     return
                 await text_queue.put(
-                    (priority, next(seq), text, _prosody_for(text), speaker)
+                    (priority, next(seq), text, _prosody_for(text))
                 )
 
-            def push_nowait(priority: int, text: str, speaker: str | None = None) -> None:
+            def push_nowait(priority: int, text: str) -> None:
                 text = sanitize_for_tts(text)
                 if not text.strip():
                     return
                 text_queue.put_nowait(
-                    (priority, next(seq), text, _prosody_for(text), speaker)
+                    (priority, next(seq), text, _prosody_for(text))
                 )
 
             tts_worker = asyncio.create_task(
                 self._tts_worker(text_queue, session_id, stop_tts, eos_ts)
             )
+            self._tts_workers[session_id] = tts_worker
 
             full = ""
 
@@ -977,63 +1046,51 @@ class StreamingPipeline:
             else:
                 llm_start = time.perf_counter()
 
-                # Multi-speaker streaming path
-                if self._speaker_coordinator and self._speaker_coordinator.enabled:
-                    ctx.dialogue_state = DialogueState.INTERRUPTIBLE
-                    full = await self._run_multi_speaker_stream(
-                        messages, session_id, ctx, int_ev,
+                # Normal single-speaker streaming path
+                first_token = True
+                tool_marker_seen = False
+
+                bc_timer = asyncio.create_task(
+                    self._backchannel_timer(
+                        text_queue, ctx, session_id, int_ev, seq
                     )
+                )
+
+                async for token in self.llm.generate_stream(messages):
                     if int_ev.is_set():
-                        return
-                    self._latency.measure("llm_full", llm_start)
-                    self._log_latency("llm_full")
-                    tool_calls = self._tool_registry.find_calls(full)
-                else:
-                    # Normal single-speaker streaming path
-                    first_token = True
-                    tool_marker_seen = False
+                        break
+                    if first_token:
+                        ctx.dialogue_state = DialogueState.INTERRUPTIBLE
+                        if bc_timer:
+                            bc_timer.cancel()
+                        self._latency.measure("llm_first_token", llm_start)
+                        self._log_latency("llm_first_token")
+                        first_token = False
+                    full += token
+                    await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
 
-                    bc_timer = asyncio.create_task(
-                        self._backchannel_timer(
-                            text_queue, ctx, session_id, int_ev, seq
-                        )
-                    )
+                    if not tool_marker_seen and "{tool:" in full:
+                        tool_marker_seen = True
+                        stop_tts.set()
+                        await self._drain_queue(text_queue)
+                        chunker.reset()
+                        continue
+                    if tool_marker_seen:
+                        continue
 
-                    async for token in self.llm.generate_stream(messages):
-                        if int_ev.is_set():
-                            break
-                        if first_token:
-                            ctx.dialogue_state = DialogueState.INTERRUPTIBLE
-                            if bc_timer:
-                                bc_timer.cancel()
-                            self._latency.measure("llm_first_token", llm_start)
-                            self._log_latency("llm_first_token")
-                            first_token = False
-                        full += token
-                        await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
+                    for c in chunker.feed(token):
+                        await push(1, self._tool_registry.strip_calls(c))
 
-                        if not tool_marker_seen and "{tool:" in full:
-                            tool_marker_seen = True
-                            stop_tts.set()
-                            await self._drain_queue(text_queue)
-                            chunker.reset()
-                            continue
-                        if tool_marker_seen:
-                            continue
+                if first_token and bc_timer:
+                    bc_timer.cancel()
 
-                        for c in chunker.feed(token):
-                            await push(1, self._tool_registry.strip_calls(c))
+                if int_ev.is_set():
+                    return
 
-                    if first_token and bc_timer:
-                        bc_timer.cancel()
+                self._latency.measure("llm_full", llm_start)
+                self._log_latency("llm_full")
 
-                    if int_ev.is_set():
-                        return
-
-                    self._latency.measure("llm_full", llm_start)
-                    self._log_latency("llm_full")
-
-                    tool_calls = self._tool_registry.find_calls(full)
+                tool_calls = self._tool_registry.find_calls(full)
 
             # ---- Tool call handling: stop speech, execute, stream followup ----
             if tool_calls and not int_ev.is_set():
@@ -1053,13 +1110,6 @@ class StreamingPipeline:
                     "role": "assistant",
                     "content": full,
                 })
-
-                tag_hint = ""
-                if self._speaker_coordinator and self._speaker_coordinator.enabled:
-                    tag_hint = (
-                        " Answer using [Sh] and [Ti] speaker tags exactly as "
-                        "instructed in the system prompt."
-                    )
 
                 # Bounded tool round-trip loop: execute, feed results back, and
                 # stream the LLM's final answer. If the LLM (incorrectly) emits
@@ -1085,47 +1135,38 @@ class StreamingPipeline:
                                 "Do NOT invent data, do NOT call another tool, and do NOT "
                                 "improvise a fallback. Briefly tell the user the "
                                 "information is currently unavailable and continue naturally."
-                            ) + tag_hint,
+                            ),
                         })
                     else:
                         followup_messages.append({
                             "role": "user",
-                            "content": "Continue naturally with the tool results." + tag_hint,
+                            "content": "Continue naturally with the tool results.",
                         })
 
                     full = ""
-                    if self._speaker_coordinator and self._speaker_coordinator.enabled:
-                        # Multi-speaker: re-stream the follow-up through the
-                        # per-speaker path so [Sh]/[Ti] speaker tags are honored.
-                        tts_worker = None
-                        full = await self._run_multi_speaker_stream(
-                            followup_messages, session_id, ctx, int_ev,
-                        )
+                    stop_tts = asyncio.Event()
+                    tts_worker = asyncio.create_task(
+                        self._tts_worker(text_queue, session_id, stop_tts, eos_ts)
+                    )
+                    self._tts_workers[session_id] = tts_worker
+
+                    llm_start = time.perf_counter()
+                    first_token = True
+                    async for token in self.llm.generate_stream(followup_messages):
                         if int_ev.is_set():
-                            return
-                    else:
-                        stop_tts = asyncio.Event()
-                        tts_worker = asyncio.create_task(
-                            self._tts_worker(text_queue, session_id, stop_tts, eos_ts)
-                        )
+                            break
+                        if first_token:
+                            first_token = False
+                        full += token
+                        await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
+                        for c in chunker.feed(token):
+                            await push(1, self._tool_registry.strip_calls(c))
 
-                        llm_start = time.perf_counter()
-                        first_token = True
-                        async for token in self.llm.generate_stream(followup_messages):
-                            if int_ev.is_set():
-                                break
-                            if first_token:
-                                first_token = False
-                            full += token
-                            await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
-                            for c in chunker.feed(token):
-                                await push(1, self._tool_registry.strip_calls(c))
+                    if int_ev.is_set():
+                        return
 
-                        if int_ev.is_set():
-                            return
-
-                        self._latency.measure("llm_full", llm_start)
-                        self._log_latency("llm_full")
+                    self._latency.measure("llm_full", llm_start)
+                    self._log_latency("llm_full")
 
                     # If the follow-up still contains a tool call, execute it
                     # next round. Otherwise we're done streaming the answer.
@@ -1152,12 +1193,11 @@ class StreamingPipeline:
             if tail:
                 await push(1, self._tool_registry.strip_calls(tail))
 
-            # Single-speaker: emit LLM done here (multi-speaker emits in streaming method)
-            if not (self._speaker_coordinator and self._speaker_coordinator.enabled):
-                await self._emit(PipelineEvent.LLM_DONE, full, session_id)
+            # Emit LLM done so clients finalize the turn and memory is recorded.
+            await self._emit(PipelineEvent.LLM_DONE, full, session_id)
 
             # End-of-stream sentinel (lowest priority: drained last)
-            text_queue.put_nowait((2, next(seq), None, None, None))
+            text_queue.put_nowait((2, next(seq), None, None))
 
             if tts_worker:
                 await tts_worker
@@ -1193,6 +1233,7 @@ class StreamingPipeline:
         finally:
             if self._current_tasks.get(session_id) is asyncio.current_task():
                 self._current_tasks.pop(session_id, None)
+            self._tts_workers.pop(session_id, None)
 
     @staticmethod
     async def _drain_queue(queue: asyncio.Queue) -> None:
@@ -1202,247 +1243,6 @@ class StreamingPipeline:
             except asyncio.QueueEmpty:
                 return
 
-    async def _run_multi_speaker_stream(
-        self,
-        messages: list[dict[str, str]],
-        session_id: str,
-        ctx: ConversationContext,
-        int_ev: asyncio.Event,
-    ) -> str:
-        """Stream LLM output through per-speaker queues with full intelligence.
-
-        Features:
-        - Real-time StreamState tracking per speaker
-        - Multi-factor interrupt decisions
-        - Speaker prediction before tags
-        - Resume-after-interrupt with checkpoints
-        - Adaptive overlap
-
-        Returns the full LLM response text.
-        """
-        coordinator = self._speaker_coordinator
-        if not coordinator or not coordinator.enabled:
-            return ""
-
-        # Initialize workers if not done
-        if not coordinator._initialized:
-            coordinator.init_workers(self.tts, session_id)
-        coordinator.start_workers()
-
-        # Create token parser
-        parser = SpeakerTokenParser(known_speakers=coordinator.speaker_names())
-        self._token_parser = parser
-
-        # Start the output merger task
-        merger_task = asyncio.create_task(
-            self._merge_worker_outputs(session_id, ctx, int_ev)
-        )
-
-        full_response = ""
-        current_speaker_chunks: dict[str, str] = {name: "" for name in coordinator.speaker_names()}
-        pre_speech_emitted: dict[str, bool] = {name: False for name in coordinator.speaker_names()}
-        tool_marker_seen = False
-        _TOOL_OPEN = "{tool:"
-        held = ""  # tokens that may be the start of a tool marker
-
-        try:
-            async for token in self.llm.generate_stream(messages):
-                if int_ev.is_set():
-                    break
-
-                full_response += token
-                await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
-
-                if tool_marker_seen:
-                    continue
-
-                candidate = held + token
-                if candidate.startswith(_TOOL_OPEN):
-                    # Tool marker opened — never feed any fragment to the
-                    # parser/TTS so it can't be spoken aloud.
-                    tool_marker_seen = True
-                    held = ""
-                    parser.reset()
-                    coordinator.drain_all_queues()
-                    await self._emit(PipelineEvent.SPEECH_END, session_id=session_id)
-                    continue
-                if _TOOL_OPEN.startswith(candidate) and len(candidate) < len(_TOOL_OPEN):
-                    # Candidate is a partial marker prefix — hold it.
-                    held = candidate
-                    continue
-
-                # Not a tool marker — release any held tokens as normal text.
-                text = held + token
-                held = ""
-                stripped = self._tool_registry.strip_calls(text)
-                if not stripped:
-                    continue
-
-                chunks = parser.feed_token(stripped)
-
-                for chunk in chunks:
-                    if int_ev.is_set():
-                        break
-
-                    speaker = chunk.speaker
-                    is_urgent = chunk.is_urgent
-
-                    coordinator.update_stream_state(speaker, chunk.text)
-
-                    if not pre_speech_emitted.get(speaker, False):
-                        prosody_events = coordinator.get_prosody_events(speaker)
-                        prosody_events.before_speech(speaker)
-                        pre_speech_emitted[speaker] = True
-
-                    if is_urgent or coordinator.should_interrupt(speaker, chunk.text)[0] != InterruptStyle.NONE:
-                        style, interrupt_type, overlap_ms = coordinator.should_interrupt(speaker, chunk.text)
-                        other = coordinator._other_than(speaker)
-
-                        other_chunks = current_speaker_chunks.get(other, "")
-                        if other_chunks:
-                            coordinator.checkpoint_on_interrupt(
-                                other, other_chunks, ctx.topic
-                            )
-
-                        if style == InterruptStyle.HARD:
-                            coordinator.interrupt_speaker(other)
-                            await self._emit(PipelineEvent.INTERRUPT, session_id=session_id)
-                        else:
-                            coordinator.pause_speaker(other)
-
-                        coordinator._metrics.record_interrupt(
-                            interrupter=speaker,
-                            interrupted=other,
-                            interrupt_type=interrupt_type.value,
-                            latency_ms=0,
-                            overlap_ms=overlap_ms,
-                            confidence=coordinator._stream_states[speaker].intent_confidence
-                            if coordinator._stream_states.get(speaker) else 0.5,
-                        )
-
-                    await coordinator.push_chunk(
-                        speaker=speaker,
-                        text=chunk.text,
-                        is_urgent=is_urgent,
-                        urgency_tag=chunk.urgency_tag,
-                    )
-                    coordinator.record_turn(speaker)
-
-                    current_speaker_chunks[speaker] = (
-                        current_speaker_chunks.get(speaker, "") + " " + chunk.text
-                    )
-
-                    if coordinator.last_speaker != speaker:
-                        pre_speech_emitted[coordinator.last_speaker] = False
-                        pre_speech_emitted[speaker] = False
-
-            # Flush remaining buffer
-            remainder = parser.flush()
-            if remainder:
-                await coordinator.push_chunk(
-                    speaker=remainder.speaker,
-                    text=remainder.text,
-                )
-
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error(f"multi-speaker stream error: {e}")
-
-        # Wait for all workers to finish synthesizing (bounded — workers
-        # persist across turns and would otherwise block forever).
-        for worker in coordinator._workers.values():
-            await worker.wait_idle(timeout=5.0)
-
-        # Wait for merger to finish
-        try:
-            await asyncio.wait_for(merger_task, timeout=5.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            merger_task.cancel()
-
-        # Log metrics
-        logger.info(coordinator._metrics.to_debug_log())
-
-        return full_response
-
-    async def _merge_worker_outputs(
-        self,
-        session_id: str,
-        ctx: ConversationContext,
-        int_ev: asyncio.Event,
-    ) -> None:
-        """Merge audio output from all per-speaker TTS workers into the main output queue.
-
-        Reads from each worker's output queue concurrently and emits
-        TTS_CHUNK events with speaker metadata.
-        """
-        coordinator = self._speaker_coordinator
-        if not coordinator:
-            return
-
-        worker_outputs = coordinator.get_all_worker_outputs()
-        if not worker_outputs:
-            return
-
-        sr = self.tts.sample_rate
-        total_bytes = 0
-        first_emit: float | None = None
-        eos_ts = time.perf_counter()
-
-        async def _consume_one(speaker: str, queue: asyncio.Queue):
-            nonlocal total_bytes, first_emit
-            while not int_ev.is_set():
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=0.2)
-                except asyncio.TimeoutError:
-                    continue
-
-                if item is None:
-                    break
-
-                speaker_name, audio_data, is_urgent = item
-
-                if isinstance(audio_data, bytes) and len(audio_data) > 0:
-                    if first_emit is None:
-                        first_emit = time.monotonic()
-                        self._latency.measure("tts_first", eos_ts)
-                        self._playback_onset[session_id] = first_emit
-                        self._echo_floor[session_id] = 0.0
-
-                    total_bytes += len(audio_data)
-                    energy = rms_energy(audio_data) / 32768.0
-                    self._echo_floor[session_id] = max(
-                        self._echo_floor.get(session_id, 0.0), energy
-                    )
-                    self._playback_active[session_id] = True
-                    wav = self._pcm_to_wav(audio_data, sr)
-
-                    # Emit with speaker info
-                    await self._output_queue.put(PipelineMessage(
-                        PipelineEvent.TTS_CHUNK, wav, session_id
-                    ))
-                elif len(audio_data) == 0:
-                    # Sentence end signal
-                    pass
-
-        tasks = [
-            asyncio.create_task(_consume_one(name, q))
-            for name, q in worker_outputs.items()
-        ]
-
-        try:
-            await asyncio.gather(*tasks)
-        except asyncio.CancelledError:
-            for t in tasks:
-                t.cancel()
-            raise
-
-        # Schedule playback clear
-        if total_bytes > 0 and first_emit is not None:
-            self._schedule_playback_clear(
-                session_id,
-                first_emit + total_bytes / (sr * 2) - time.monotonic(),
-            )
 
     async def _backchannel_timer(
         self,
@@ -1462,7 +1262,7 @@ class StreamingPipeline:
             return
         text = self.turn_backchannel.generator.generate_thinking()
         if text:
-            text_queue.put_nowait((0, next(seq), text, None, None))
+            text_queue.put_nowait((0, next(seq), text, None))
             logger.debug(f"thinking backchannel session={session_id} text={text}")
 
     async def _tts_worker(
@@ -1474,6 +1274,7 @@ class StreamingPipeline:
     ) -> None:
         """Consume text chunks from the priority queue and synthesize audio."""
         int_ev = self._int_event(session_id)
+        generation = self._generation(session_id)
         sr = self.tts.sample_rate
         total_bytes = 0
         first_emit: float | None = None
@@ -1482,12 +1283,10 @@ class StreamingPipeline:
         async def _one(text: str) -> AsyncGenerator[str, None]:
             yield text
 
-        prev_speaker: str | None = None
-
         try:
             while True:
                 try:
-                    _, _, text, prosody, speaker = await asyncio.wait_for(
+                    _, _, text, prosody = await asyncio.wait_for(
                         text_queue.get(), timeout=0.2
                     )
                 except asyncio.TimeoutError:
@@ -1503,26 +1302,8 @@ class StreamingPipeline:
                     break
                 spoken.append(text)
 
-                # Inter-speaker pause (small natural gap when switching voices)
-                if speaker and prev_speaker and speaker != prev_speaker:
-                    pause_ms = 300
-                    wav_silence = self._pcm_to_wav(
-                        b"\x00\x00" * int(sr * pause_ms / 1000), sr
-                    )
-                    await self._emit(
-                        PipelineEvent.TTS_CHUNK, wav_silence, session_id
-                    )
-                prev_speaker = speaker
-
                 try:
-                    # Route to the correct speaker voice
-                    tts = self.tts
-                    if hasattr(tts, "get_voice") and speaker:
-                        voice = tts.get_voice(speaker)
-                        if voice:
-                            tts = voice
-
-                    async for audio_chunk in tts.synthesize_stream(
+                    async for audio_chunk in self.tts.synthesize_stream(
                         _one(text), prosody=prosody
                     ):
                         if int_ev.is_set() or stop_tts.is_set():
@@ -1534,16 +1315,22 @@ class StreamingPipeline:
                                     self._latency.measure("tts_first", eos_ts)
                                     self._log_latency("tts_first")
                                 self._playback_onset[session_id] = first_emit
-                                self._echo_floor[session_id] = 0.0
+                                self._echo_floor.setdefault(session_id, 0.0)
+                                meta = self._prosody_meta.get(
+                                    session_id, {}
+                                )
+                                await self._emit(
+                                    PipelineEvent.PROSODY,
+                                    json.dumps(meta),
+                                    session_id,
+                                    generation=generation,
+                                )
                             total_bytes += len(audio_chunk)
-                            energy = rms_energy(audio_chunk) / 32768.0
-                            self._echo_floor[session_id] = max(
-                                self._echo_floor.get(session_id, 0.0), energy
-                            )
                             self._playback_active[session_id] = True
                             wav = self._pcm_to_wav(audio_chunk, sr)
                             await self._emit(
-                                PipelineEvent.TTS_CHUNK, wav, session_id
+                                PipelineEvent.TTS_CHUNK, wav, session_id,
+                                generation=generation,
                             )
                 except Exception as e:
                     logger.error(
@@ -1722,15 +1509,6 @@ class StreamingPipeline:
             user_profile_block=self._user_profiles.get(session_id, ""),
         )
 
-        # Multi-speaker: prepend speaker personas and rules
-        if self._speaker_coordinator and self._speaker_coordinator.enabled:
-            multi_block = build_multi_speaker_prompt(
-                list(self._speaker_coordinator.speakers.values()),
-                lead_speaker=self._speaker_coordinator.last_speaker,
-            )
-            if multi_block:
-                system_prompt = multi_block + "\n\n" + system_prompt
-
         tool_block = self._tool_registry.system_prompt_block()
         if tool_block:
             system_prompt += tool_block
@@ -1819,6 +1597,10 @@ class StreamingPipeline:
     def latency_report(self) -> dict[str, dict[str, float]]:
         return self._latency.report()
 
+    def prosody_snapshot(self) -> dict[str, dict[str, str]]:
+        """Last selected prosody label + user emotion per live session."""
+        return {sid: dict(meta) for sid, meta in self._prosody_meta.items()}
+
     def _log_latency(self, stage: str) -> None:
         report = self._latency.report()
         if stage in report:
@@ -1830,8 +1612,24 @@ class StreamingPipeline:
         event: PipelineEvent,
         data: str | bytes | None = None,
         session_id: str = "default",
+        generation: int | None = None,
     ) -> None:
+        # Use put_nowait: a slow/dead client must never stall the pipeline for
+        # every session. A full queue means the consumer is stuck, so dropping
+        # is the right backpressure here — blocking would deadlock all sessions
+        # on a single queue. Events route to the session's own queue when one
+        # is registered (ws/webrtc), else the global queue (CLI).
+        q = self._session_outputs.get(session_id) or self._output_queue
         try:
-            await self._output_queue.put(PipelineMessage(event, data, session_id))
+            q.put_nowait(
+                PipelineMessage(
+                    event,
+                    data,
+                    session_id,
+                    self._generation(session_id)
+                    if generation is None
+                    else generation,
+                )
+            )
         except asyncio.QueueFull:
             logger.warning(f"output queue full, dropping {event}")

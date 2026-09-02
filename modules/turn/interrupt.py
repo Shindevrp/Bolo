@@ -7,7 +7,7 @@ class InterruptHandler:
         speech_energy_threshold: float = 0.01,
         silence_confidence_threshold: float = 0.3,
         consecutive_speech_frames: int = 3,
-        playback_consecutive_speech_frames: int = 3,
+        playback_consecutive_speech_frames: int = 1,
     ) -> None:
         self.speech_energy_threshold = speech_energy_threshold
         self.silence_confidence_threshold = silence_confidence_threshold

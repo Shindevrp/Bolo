@@ -17,6 +17,7 @@ from app.session_registry import register as register_session
 from app.session_registry import unregister as unregister_session
 from modules.memory.session import SessionMemory
 from modules.memory.retrieval import RetrievalModule
+
 from utils.logger import get_logger
 
 logger = get_logger("webrtc")
@@ -106,91 +107,115 @@ async def webrtc_signal(websocket: WebSocket):
     register_session(session)
 
     async def pump_output():
-        interrupted = False
-        async for msg in pipeline.output_stream():
-            try:
-                if msg.session_id != session_id:
-                    continue
+        try:
+            async for msg in pipeline.output_stream_for(session_id):
+                try:
+                    if msg.session_id != session_id:
+                        continue
 
-                if msg.event == PipelineEvent.SPEECH_START:
-                    interrupted = False
-                    session.set_state(DialogueState.LISTENING)
-                    await websocket.send_json({"type": "speech_start"})
+                    if msg.event == PipelineEvent.SPEECH_START:
+                        session.set_state(DialogueState.LISTENING)
+                        await websocket.send_json({"type": "speech_start"})
 
-                elif msg.event == PipelineEvent.SPEECH_END:
-                    session.set_state(DialogueState.PROCESSING)
-                    await websocket.send_json({"type": "speech_end"})
+                    elif msg.event == PipelineEvent.SPEECH_END:
+                        session.set_state(DialogueState.PROCESSING)
+                        await websocket.send_json({"type": "speech_end"})
 
-                elif msg.event == PipelineEvent.PARTIAL_TRANSCRIPT:
-                    await websocket.send_json({
-                        "type": "partial_transcript",
-                        "text": str(msg.data),
-                    })
+                    elif msg.event == PipelineEvent.PARTIAL_TRANSCRIPT:
+                        await websocket.send_json({
+                            "type": "partial_transcript",
+                            "text": str(msg.data),
+                        })
 
-                elif msg.event == PipelineEvent.FINAL_TRANSCRIPT:
-                    interrupted = False
-                    session.add_user_turn(str(msg.data))
-                    session.last_activity = time.time()
-                    session.update(pipeline.context(session_id))
-                    await websocket.send_json({
-                        "type": "transcript",
-                        "text": str(msg.data),
-                    })
+                    elif msg.event == PipelineEvent.FINAL_TRANSCRIPT:
+                        session.add_user_turn(str(msg.data))
+                        session.last_activity = time.time()
+                        session.update(pipeline.context(session_id))
+                        await websocket.send_json({
+                            "type": "transcript",
+                            "text": str(msg.data),
+                        })
 
-                elif msg.event == PipelineEvent.LLM_TOKEN:
-                    session.set_state(DialogueState.INTERRUPTIBLE)
-                    await websocket.send_json({
-                        "type": "llm_token",
-                        "token": str(msg.data),
-                    })
+                    elif msg.event == PipelineEvent.LLM_TOKEN:
+                        session.set_state(DialogueState.INTERRUPTIBLE)
+                        await websocket.send_json({
+                            "type": "llm_token",
+                            "token": str(msg.data),
+                        })
 
-                elif msg.event == PipelineEvent.LLM_DONE:
-                    session.add_ai_turn(str(msg.data))
-                    await websocket.send_json({
-                        "type": "llm_done",
-                        "text": str(msg.data),
-                    })
+                    elif msg.event == PipelineEvent.LLM_DONE:
+                        session.add_ai_turn(str(msg.data))
+                        await websocket.send_json({
+                            "type": "llm_done",
+                            "text": str(msg.data),
+                        })
 
-                elif msg.event == PipelineEvent.TTS_CHUNK:
-                    if isinstance(msg.data, bytes):
-                        if interrupted:
+                    elif msg.event == PipelineEvent.TTS_CHUNK:
+                        if isinstance(msg.data, bytes):
+                            if pipeline.stale_event(session_id, msg):
+                                continue
+                            pcm = _strip_wav_header(msg.data)
+                            sr, _ = _extract_wav_info(msg.data)
+                            if sr == 0:
+                                sr = 16000
+                            tts_track.push_pcm(pcm, sr)
+
+                    elif msg.event == PipelineEvent.RESPONSE_DELAY:
+                        await websocket.send_json({
+                            "type": "status",
+                            "text": f"waiting {msg.data}s",
+                        })
+
+                    elif msg.event == PipelineEvent.TTS_DONE:
+                        session.set_state(DialogueState.IDLE)
+                        await websocket.send_json({"type": "tts_done"})
+
+                    elif msg.event == PipelineEvent.BACKCHANNEL:
+                        await websocket.send_json({
+                            "type": "backchannel",
+                            "text": str(msg.data),
+                        })
+
+                    elif msg.event == PipelineEvent.PROSODY:
+                        if pipeline.stale_event(session_id, msg):
                             continue
-                        pcm = _strip_wav_header(msg.data)
-                        sr, _ = _extract_wav_info(msg.data)
-                        if sr == 0:
-                            sr = 16000
-                        tts_track.push_pcm(pcm, sr)
+                        try:
+                            meta = json.loads(str(msg.data))
+                        except json.JSONDecodeError:
+                            meta = {}
+                        session.metadata["last_prosody"] = meta
+                        await websocket.send_json({
+                            "type": "prosody",
+                            "label": meta.get("label", "neutral"),
+                            "emotion": meta.get("emotion", ""),
+                        })
 
-                elif msg.event == PipelineEvent.RESPONSE_DELAY:
-                    await websocket.send_json({
-                        "type": "status",
-                        "text": f"waiting {msg.data}s",
-                    })
+                    elif msg.event == PipelineEvent.INTERRUPT:
+                        tts_track.flush()
+                        session.set_state(DialogueState.LISTENING)
+                        await websocket.send_json({"type": "interrupt"})
 
-                elif msg.event == PipelineEvent.TTS_DONE:
-                    session.set_state(DialogueState.IDLE)
-                    await websocket.send_json({"type": "tts_done"})
+                    elif msg.event == PipelineEvent.ERROR:
+                        await websocket.send_json({
+                            "type": "error",
+                            "text": str(msg.data),
+                        })
 
-                elif msg.event == PipelineEvent.BACKCHANNEL:
-                    await websocket.send_json({
-                        "type": "backchannel",
-                        "text": str(msg.data),
-                    })
-
-                elif msg.event == PipelineEvent.INTERRUPT:
-                    interrupted = True
-                    tts_track.flush()
-                    session.set_state(DialogueState.LISTENING)
-                    await websocket.send_json({"type": "interrupt"})
-
-                elif msg.event == PipelineEvent.ERROR:
-                    await websocket.send_json({
-                        "type": "error",
-                        "text": str(msg.data),
-                    })
-
-            except Exception:
-                break
+                except Exception as ex:
+                    # A send failure means the client connection is gone. Close
+                    # it so the session cleans up and the client can reconnect;
+                    # silently breaking would keep the session open with output
+                    # permanently dead.
+                    logger.warning(f"session {session_id} pump_output error: {ex}")
+                    try:
+                        await websocket.close(code=1011)
+                    except Exception:
+                        pass
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception as ex:
+            logger.warning(f"session {session_id} output_stream error: {ex}")
 
     pump_task = asyncio.create_task(pump_output())
 

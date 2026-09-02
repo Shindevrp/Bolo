@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import urllib.parse
 import urllib.request
+import urllib.error
 import json
 import html
 import re
+import time
 
 
 def _strip_html(s: str) -> str:
@@ -12,12 +14,37 @@ def _strip_html(s: str) -> str:
     return html.unescape(s).strip()
 
 
+def _http_get_json(url: str, retries: int = 2) -> dict:
+    """GET a JSON endpoint with retry + exponential backoff.
+
+    Retries on HTTP 429/5xx (respecting Retry-After) and on transient network
+    errors (timeouts, connection resets) so a rate-limited Wikipedia/DuckDuckGo
+    doesn't immediately fail the tool call.
+    """
+    attempt = 0
+    while True:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "TASA/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            retry_after = e.headers.get("Retry-After")
+            wait = float(retry_after) if retry_after and retry_after.isdigit() else None
+            if e.code not in (429, 500, 502, 503, 504) or attempt >= retries:
+                raise
+            attempt += 1
+            time.sleep(wait if wait is not None else min(2 ** attempt, 4))
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if attempt >= retries:
+                raise
+            attempt += 1
+            time.sleep(min(2 ** attempt, 4))
+
+
 def _ddg_instant(query: str) -> list[str]:
     encoded = urllib.parse.quote(query.strip())
     url = f"https://api.duckduckgo.com/?q={encoded}&format=json&no_html=1"
-    req = urllib.request.Request(url, headers={"User-Agent": "TASA/1.0"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        data = json.loads(resp.read().decode())
+    data = _http_get_json(url)
 
     results: list[str] = []
     abstract = data.get("AbstractText", "")
@@ -44,9 +71,7 @@ def _wiki_search(query: str) -> str:
         "utf8": "1",
     })
     url = f"https://en.wikipedia.org/w/api.php?{params}"
-    req = urllib.request.Request(url, headers={"User-Agent": "TASA/1.0"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        data = json.loads(resp.read().decode())
+    data = _http_get_json(url)
     hits = data.get("query", {}).get("search", [])
     if not hits:
         return f"No results found for: {query}"

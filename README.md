@@ -26,7 +26,7 @@
 <span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">TOOLS</span>
 </p>
 </div>
-<div style="padding:14px 28px; background:#010409; border-top:1px solid #21262d; font-family:'Fira Code',ui-monospace,monospace; font-size:12px; color:#8b949e;"><span style="color:#58a6ff;">~350ms</span> first audio &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">&lt;700ms</span> full response &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">179</span> tests passing &nbsp;&middot;&nbsp; barge-in &amp; backchannel native</div>
+<div style="padding:14px 28px; background:#010409; border-top:1px solid #21262d; font-family:'Fira Code',ui-monospace,monospace; font-size:12px; color:#8b949e;"><span style="color:#58a6ff;">~350ms</span> first audio &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">&lt;700ms</span> full response &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">195</span> tests passing &nbsp;&middot;&nbsp; barge-in &amp; backchannel native</div>
 </div>
 </div>
 
@@ -215,7 +215,7 @@ flowchart TB
 |-------|-----------|-------|
 | Audio Ingestion | WebSocket PCM (16kHz) or WebRTC Opus RTP | Frame-segmented into uniform 128ms / 4096-byte windows |
 | Voice Activity Detection | Silero VAD per-frame probability + RMS energy backstop | Frames below `0.003` RMS are treated as silence even if the VAD RNN says speech — prevents the VAD state from swallowing the turn end |
-| Echo Proofing | 350ms grace period after playback onset + per-session echo floor × 1.5 | Lets the speaker's own TTS overlap; any signal above the floor during the next turn is treated as the user (barge-in) |
+| Echo Proofing | 350ms grace period after playback onset + acoustic mic-measured echo floor × 1.5 | Lets the speaker's own TTS overlap; any signal above the floor during the next turn is treated as the user (barge-in) |
 | Partial STT | Re-transcribes the accumulated speech buffer every 1.0s | Feeds the turn detector and the speculative LLM |
 | Final STT | faster-whisper on the full utterance | `beam_size=1, best_of=1, vad_filter=False` for low latency |
 | Speculative LLM | Starts LLM generation on the last partial transcript while STT finishes | Output reused when the final transcript starts with the partial and intent ≠ correction → saves ~1–2s TTFT |
@@ -245,10 +245,10 @@ The adaptive end-of-speech threshold is set per turn:
 
 The `InterruptHandler` tracks consecutive speech frames during playback. When the user cuts in:
 
-- **During playback**: threshold is raised to `max(energy_threshold, echo_floor × 1.5)` and requires `playback_consecutive_speech_frames` frames
-- **During LLM generation** (INTERRUPTIBLE state): lower threshold, `consecutive_speech_frames` frames
+- **During playback**: threshold is raised to `max(energy_threshold, echo_floor × 1.5)` and interrupts after `playback_consecutive_speech_frames` (1) frame — the user's speech cuts off TTS playback within a single 128ms VAD frame. The `echo_floor` is measured **acoustically** from non-speech microphone frames while the assistant is playing (not the electrical TTS waveform), so the raised threshold rides just above the echo actually reaching the mic while remaining reachable by normal user speech.
+- **During LLM generation** (INTERRUPTIBLE state): lower threshold, `consecutive_speech_frames` (3) frames
 
-An interrupt cancels the current LLM task, flushes the TTS queue, clears playback state, and returns to `LISTENING`.
+An interrupt cancels the current LLM task and TTS worker immediately, bumps the session's output **generation** so any stale audio chunks still in flight are dropped by the client pumps (WebSocket/WebRTC), clears playback state, and returns to `LISTENING`. The browser stops the currently playing `BufferSource` and wipes its queued audio on the `interrupt` message.
 
 ### 4. Backchanneling
 
@@ -562,7 +562,7 @@ pytest tests/ -v
 | Module | Tests | What's Covered |
 |--------|-------|-----------------|
 | `test_prosody.py` | 32 | Prosody selector profiles, sentiment, pauses, comma splice, emphasis |
-| `test_streaming.py` | 30 | Full pipeline: turn flow, speculative LLM reuse, tool calls, barge-in, compression, labeling |
+| `test_streaming.py` | 32 | Full pipeline: turn flow, speculative LLM reuse, tool calls, barge-in (incl. acoustic echo floor), compression, labeling |
 | `test_facts.py` | 17 | Fact regex extraction, latest-wins, LLM parsing, prompt |
 | `test_memory.py` | 13 | Session window, token budget, vector DB, retrieval, topic boost |
 | `test_intent.py` | 12 | Intent classification (question, correction, command, continuation...) |
