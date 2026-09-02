@@ -33,5 +33,6 @@ def _entry(s: SessionState) -> dict:
         "engagement_score": round(s.engagement_score, 2),
         "total_user_turns": s.total_user_turns,
         "total_ai_turns": s.total_ai_turns,
+        "prosody": s.metadata.get("last_prosody") or None,
         "last_activity": round(s.last_activity, 1),
     }

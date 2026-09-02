@@ -196,6 +196,7 @@ class ProsodySelector:
         elif intent == "command":
             length *= 0.9
             noise = min(0.6, noise + 0.05)
+            noise_w = min(0.8, noise_w + 0.05)
             label = f"{label}-direct"
         elif intent == "continuation":
             length *= 0.95
@@ -205,10 +206,12 @@ class ProsodySelector:
         if user_sentiment == "negative":
             length *= 1.1
             noise *= 0.9
+            noise_w = max(0.35, noise_w - 0.05)
             label = f"{label}-supportive"
         elif user_sentiment == "positive":
             length *= 0.95
             noise = min(0.6, noise + 0.05)
+            noise_w = min(0.8, noise_w + 0.05)
             label = f"{label}-warm"
 
         # B4: user repeating themselves -> patient, measured.
@@ -234,16 +237,19 @@ class ProsodySelector:
         if trimmed.endswith("?"):
             length *= 1.12
             silence += 0.05
+            noise_w = min(0.8, noise_w + 0.05)
             label = "question"
         elif trimmed.endswith("!") or (
             len(trimmed) < 12 and trimmed.upper() == trimmed
         ):
             length *= 0.9
             noise = min(0.65, noise + 0.1)
+            noise_w = min(0.8, noise_w + 0.05)
             label = "emphatic"
         elif _ELLIPSIS.search(trimmed):
             length *= 1.15
             noise *= 0.9
+            noise_w = max(0.35, noise_w - 0.03)
             silence += 0.15
             label = "thoughtful"
         elif _NUMBERED_ITEM.match(trimmed):
@@ -263,7 +269,7 @@ class ProsodySelector:
         profile = ProsodyProfile(
             length_scale=max(0.6, min(1.5, length)),
             noise_scale=max(0.2, min(0.7, noise)),
-            noise_w=noise_w,
+            noise_w=max(0.2, min(0.8, noise_w)),
             sentence_silence=silence,
             label=label,
         )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 
 
@@ -80,6 +81,13 @@ async def _run_demo(args: argparse.Namespace) -> None:
                 print("\n[listening...]", end="", flush=True)
             elif msg.event == PipelineEvent.LLM_TOKEN:
                 print(msg.data, end="", flush=True)
+            elif msg.event == PipelineEvent.PROSODY:
+                try:
+                    meta = json.loads(str(msg.data))
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                if meta.get("label"):
+                    print(f"\n[tone: {meta['label']}]", flush=True)
 
     out_task = asyncio.create_task(print_output())
 

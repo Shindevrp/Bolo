@@ -17,7 +17,7 @@ from app.session_registry import register as register_session
 from app.session_registry import unregister as unregister_session
 from modules.memory.session import SessionMemory
 from modules.memory.retrieval import RetrievalModule
-from modules.speaker.parser import split_token_segments
+
 from utils.logger import get_logger
 
 logger = get_logger("webrtc")
@@ -107,7 +107,6 @@ async def webrtc_signal(websocket: WebSocket):
     register_session(session)
 
     async def pump_output():
-        interrupted = False
         try:
             async for msg in pipeline.output_stream_for(session_id):
                 try:
@@ -115,7 +114,6 @@ async def webrtc_signal(websocket: WebSocket):
                         continue
 
                     if msg.event == PipelineEvent.SPEECH_START:
-                        interrupted = False
                         session.set_state(DialogueState.LISTENING)
                         await websocket.send_json({"type": "speech_start"})
 
@@ -130,7 +128,6 @@ async def webrtc_signal(websocket: WebSocket):
                         })
 
                     elif msg.event == PipelineEvent.FINAL_TRANSCRIPT:
-                        interrupted = False
                         session.add_user_turn(str(msg.data))
                         session.last_activity = time.time()
                         session.update(pipeline.context(session_id))
@@ -141,15 +138,10 @@ async def webrtc_signal(websocket: WebSocket):
 
                     elif msg.event == PipelineEvent.LLM_TOKEN:
                         session.set_state(DialogueState.INTERRUPTIBLE)
-                        known = set()
-                        if pipeline._speaker_coordinator:
-                            known = set(pipeline._speaker_coordinator.speaker_names())
-                        for text, speaker in split_token_segments(str(msg.data), known):
-                            await websocket.send_json({
-                                "type": "llm_token",
-                                "token": text,
-                                "speaker": speaker,
-                            })
+                        await websocket.send_json({
+                            "type": "llm_token",
+                            "token": str(msg.data),
+                        })
 
                     elif msg.event == PipelineEvent.LLM_DONE:
                         session.add_ai_turn(str(msg.data))
@@ -160,7 +152,7 @@ async def webrtc_signal(websocket: WebSocket):
 
                     elif msg.event == PipelineEvent.TTS_CHUNK:
                         if isinstance(msg.data, bytes):
-                            if interrupted:
+                            if pipeline.stale_event(session_id, msg):
                                 continue
                             pcm = _strip_wav_header(msg.data)
                             sr, _ = _extract_wav_info(msg.data)
@@ -184,8 +176,21 @@ async def webrtc_signal(websocket: WebSocket):
                             "text": str(msg.data),
                         })
 
+                    elif msg.event == PipelineEvent.PROSODY:
+                        if pipeline.stale_event(session_id, msg):
+                            continue
+                        try:
+                            meta = json.loads(str(msg.data))
+                        except json.JSONDecodeError:
+                            meta = {}
+                        session.metadata["last_prosody"] = meta
+                        await websocket.send_json({
+                            "type": "prosody",
+                            "label": meta.get("label", "neutral"),
+                            "emotion": meta.get("emotion", ""),
+                        })
+
                     elif msg.event == PipelineEvent.INTERRUPT:
-                        interrupted = True
                         tts_track.flush()
                         session.set_state(DialogueState.LISTENING)
                         await websocket.send_json({"type": "interrupt"})

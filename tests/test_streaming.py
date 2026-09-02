@@ -69,9 +69,9 @@ class TestTTSWorkerPriority:
             p = _make_pipeline()
             q: asyncio.PriorityQueue = asyncio.PriorityQueue()
             seq = itertools.count()
-            q.put_nowait((1, next(seq), "Second sentence.", None, None))
-            q.put_nowait((0, next(seq), "hmm", None, None))
-            q.put_nowait((2, next(seq), None, None, None))
+            q.put_nowait((1, next(seq), "Second sentence.", None))
+            q.put_nowait((0, next(seq), "hmm", None))
+            q.put_nowait((2, next(seq), None, None))
             await p._tts_worker(q, "sess", asyncio.Event())
             return p.tts.synthesized
 
@@ -83,8 +83,8 @@ class TestTTSWorkerPriority:
             p = _make_pipeline()
             q: asyncio.PriorityQueue = asyncio.PriorityQueue()
             seq = itertools.count()
-            q.put_nowait((1, next(seq), "Should be dropped.", None, None))
-            q.put_nowait((2, next(seq), None, None, None))
+            q.put_nowait((1, next(seq), "Should be dropped.", None))
+            q.put_nowait((2, next(seq), None, None))
             int_ev = p._int_event("sess")
             int_ev.set()
             await p._tts_worker(q, "sess", int_ev)
@@ -98,7 +98,7 @@ class TestTTSWorkerPriority:
             p = _make_pipeline()
             q: asyncio.PriorityQueue = asyncio.PriorityQueue()
             seq = itertools.count()
-            q.put_nowait((1, next(seq), "Drop me.", None, None))
+            q.put_nowait((1, next(seq), "Drop me.", None))
             stop = asyncio.Event()
             stop.set()
             await p._tts_worker(q, "sess", stop)
@@ -359,8 +359,8 @@ class TestPlaybackActive:
             p = _make_pipeline()
             q: asyncio.PriorityQueue = asyncio.PriorityQueue()
             seq = itertools.count()
-            q.put_nowait((1, next(seq), "Say something.", None, None))
-            q.put_nowait((2, next(seq), None, None, None))
+            q.put_nowait((1, next(seq), "Say something.", None))
+            q.put_nowait((2, next(seq), None, None))
             await p._tts_worker(q, "sess", asyncio.Event())
             assert p._playback_active.get("sess") is True
             await asyncio.sleep(0.7)
@@ -425,7 +425,7 @@ class TestPlaybackActive:
             p = _make_pipeline()
             q: asyncio.PriorityQueue = asyncio.PriorityQueue()
             seq = itertools.count()
-            q.put_nowait((1, next(seq), "Played already.", None, None))
+            q.put_nowait((1, next(seq), "Played already.", None))
             worker = asyncio.create_task(p._tts_worker(q, "sess", asyncio.Event()))
             await asyncio.sleep(0.3)
             worker.cancel()
@@ -575,6 +575,88 @@ class TestPlaybackActive:
         asyncio.run(run())
 
 
+class EchoVAD:
+    """is_speech True when a frame exceeds *value* (int16), else False."""
+    sample_rate = 16000
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def is_speech(self, chunk: bytes) -> bool:
+        trim = chunk[:len(chunk) & ~1]
+        return any(abs(v) > self.value for (v,) in struct.iter_unpack("<h", trim))
+
+    def reset(self) -> None:
+        pass
+
+
+class TestAcousticEchoFloor:
+    def test_echo_frames_raise_floor_and_louder_speech_barges(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.vad = EchoVAD(value=2000)
+            p._playback_active["sess"] = True
+            p._playback_onset["sess"] = time.monotonic() - 5.0
+            p._echo_floor["sess"] = 0.0
+            p._ctx("sess").dialogue_state = DialogueState.IDLE
+
+            p._running = True
+            loop_task = asyncio.create_task(p._pipeline_loop())
+            seen: list[tuple[PipelineEvent, str]] = []
+
+            async def collect() -> None:
+                async for msg in p.output_stream():
+                    seen.append((msg.event, msg.session_id))
+
+            col_task = asyncio.create_task(collect())
+            # quiet echo frames (non-speech for EchoVAD) build the acoustic floor
+            for _ in range(4):
+                await p.push_audio(_const_energy_chunk(1500), "sess")
+            await asyncio.sleep(0.1)
+            assert p._echo_floor.get("sess", 0.0) > 0.0
+            # louder user speech now barges in over the echo floor
+            for _ in range(2):
+                await p.push_audio(_const_energy_chunk(6000), "sess")
+            await asyncio.sleep(0.2)
+            p._running = False
+            loop_task.cancel()
+            await asyncio.gather(loop_task, col_task, return_exceptions=True)
+
+            assert (PipelineEvent.INTERRUPT, "sess") in seen
+
+        asyncio.run(run())
+
+    def test_echo_level_speech_does_not_barge(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.vad = EchoVAD(value=2000)
+            p._playback_active["sess"] = True
+            p._playback_onset["sess"] = time.monotonic() - 5.0
+            p._echo_floor["sess"] = 0.0
+            p._ctx("sess").dialogue_state = DialogueState.IDLE
+
+            p._running = True
+            loop_task = asyncio.create_task(p._pipeline_loop())
+            seen: list[tuple[PipelineEvent, str]] = []
+
+            async def collect() -> None:
+                async for msg in p.output_stream():
+                    seen.append((msg.event, msg.session_id))
+
+            col_task = asyncio.create_task(collect())
+            # echo frames that do not clear the MARGIN over the floor must not barge
+            for _ in range(6):
+                await p.push_audio(_const_energy_chunk(1500), "sess")
+            await asyncio.sleep(0.2)
+            p._running = False
+            loop_task.cancel()
+            await asyncio.gather(loop_task, col_task, return_exceptions=True)
+
+            assert (PipelineEvent.INTERRUPT, "sess") not in seen
+
+        asyncio.run(run())
+
+
 class FakeToolLLM:
     def __init__(self) -> None:
         self.calls = 0
@@ -621,7 +703,7 @@ class TestBackchannelTiming:
             )
 
             assert not q.empty()
-            prio, _, text, _prosody, _speaker = q.get_nowait()
+            prio, _, text, _prosody = q.get_nowait()
             assert prio == 0
             assert text in BACKCHANNEL_CANDIDATES["thinking"]
 
