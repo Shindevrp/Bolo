@@ -303,6 +303,49 @@ class TestMultiSessionIsolation:
 
         asyncio.run(run())
 
+    def test_signal_interrupt_does_not_wait_on_slow_tts_worker(self) -> None:
+        """signal_interrupt must return promptly so the pipeline loop can keep
+        capturing the interruption utterance, even if the TTS worker is slow to
+        abort its current synthesis."""
+        async def run() -> None:
+            p = _make_pipeline()
+            release = asyncio.Event()
+            started = asyncio.Event()
+
+            async def slow_tts(text_queue):
+                started.set()
+                # Simulate a TTS worker that is slow to unwind: it won't react
+                # to cancellation until `release` is set.
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    await asyncio.sleep(0.001)
+                    raise
+
+            p.tts = FakeTTS()
+            q: asyncio.PriorityQueue = asyncio.PriorityQueue()
+            seq = itertools.count()
+            q.put_nowait((1, next(seq), "hello", None))
+            tts_worker = asyncio.create_task(slow_tts(q))
+            p._tts_workers["sess"] = tts_worker
+
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+
+            # signal_interrupt must return well before the slow worker unwinds.
+            t0 = time.monotonic()
+            await asyncio.wait_for(p.signal_interrupt("sess"), timeout=0.1)
+            elapsed = time.monotonic() - t0
+            assert elapsed < 0.1
+
+            # Clean up so the helper reaper can finish.
+            release.set()
+            try:
+                await tts_worker
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        asyncio.run(run())
+
     def test_process_segment_streams_and_clears_task_map(self) -> None:
         async def run() -> None:
             p = _make_pipeline()

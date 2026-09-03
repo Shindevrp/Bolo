@@ -338,16 +338,25 @@ class StreamingPipeline:
         ev = self._int_event(session_id)
         ev.set()
         self._bump_generation(session_id)
+
+        # Cancel the in-flight generation (LLM stream + its children). We do
+        # NOT await it here: it must unwind in the background so that the
+        # pipeline loop can return to listening immediately and capture the
+        # interruption utterance without stalling.
         task = self._current_tasks.get(session_id)
         if task and not task.done():
             task.cancel()
+
+        # Cancel the TTS worker and let it unwind in the background. Awaiting
+        # it would block the pipeline loop for as long as Piper takes to abort
+        # the current (CPU-bound, off-thread) synthesis chunk, which would
+        # freeze barge-in detection and the capture of the new user speech.
         tts_worker = self._tts_workers.get(session_id)
         if tts_worker and not tts_worker.done():
             tts_worker.cancel()
-            try:
-                await tts_worker
-            except (asyncio.CancelledError, Exception):
-                pass
+            self._reap_tts_worker(tts_worker)
+
+        # Clear playback bookkeeping synchronously (plain dict work, no IO).
         self._playback_active[session_id] = False
         self._playback_onset.pop(session_id, None)
         self._echo_floor.pop(session_id, None)
@@ -355,6 +364,18 @@ class StreamingPipeline:
         if clear_task and not clear_task.done():
             clear_task.cancel()
         logger.info(f"interrupt signaled for session {session_id}")
+
+    def _reap_tts_worker(self, worker: asyncio.Task) -> None:
+        """Await a cancelled TTS worker in the background so it can't block
+        the pipeline loop, while still collecting its (cancelled) exception."""
+
+        async def _reap() -> None:
+            try:
+                await worker
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        asyncio.create_task(_reap())
 
     async def output_stream(self) -> AsyncGenerator[PipelineMessage, None]:
         """Legacy global output stream (used by the CLI)."""
@@ -1312,6 +1333,11 @@ class StreamingPipeline:
         total_bytes = 0
         first_emit: float | None = None
         spoken: list[str] = []
+        # Set whenever this worker bails due to an interrupt / stop. The
+        # session's int_ev can be re-cleared by a later turn before this
+        # finally runs, so we track interruption locally to avoid spurious
+        # side effects (playback-clear / last_spoken) from stale workers.
+        interrupted = False
 
         async def _one(text: str) -> AsyncGenerator[str, None]:
             yield text
@@ -1324,6 +1350,7 @@ class StreamingPipeline:
                     )
                 except asyncio.TimeoutError:
                     if int_ev.is_set() or stop_tts.is_set():
+                        interrupted = True
                         await self._drain_queue(text_queue)
                         break
                     continue
@@ -1331,6 +1358,7 @@ class StreamingPipeline:
                 if text is None:
                     break
                 if int_ev.is_set() or stop_tts.is_set():
+                    interrupted = True
                     await self._drain_queue(text_queue)
                     break
                 spoken.append(text)
@@ -1340,6 +1368,7 @@ class StreamingPipeline:
                         _one(text), prosody=prosody
                     ):
                         if int_ev.is_set() or stop_tts.is_set():
+                            interrupted = True
                             break
                         if isinstance(audio_chunk, bytes) and len(audio_chunk) > 0:
                             if first_emit is None:
@@ -1372,14 +1401,14 @@ class StreamingPipeline:
         finally:
             if (
                 total_bytes > 0
-                and not int_ev.is_set()
+                and not interrupted
                 and first_emit is not None
             ):
                 self._schedule_playback_clear(
                     session_id,
                     first_emit + total_bytes / (sr * 2) - time.monotonic(),
                 )
-            if not int_ev.is_set() and spoken:
+            if not interrupted and spoken:
                 self._last_spoken[session_id] = " ".join(spoken)
 
     def _schedule_playback_clear(self, session_id: str, delay: float) -> None:
