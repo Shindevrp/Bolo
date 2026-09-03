@@ -913,6 +913,7 @@ class StreamingPipeline:
                     partial, ctx, memory, retrieval,
                     facts=self._facts.get(session_id),
                     session_id=session_id,
+                    user_repeated=ctx.user_repeated,
                 )
 
                 async def _spec_llm():
@@ -1015,6 +1016,7 @@ class StreamingPipeline:
                     transcript, ctx, memory, retrieval,
                     facts=self._facts.get(session_id),
                     session_id=session_id,
+                    user_repeated=ctx.user_repeated,
                 )
 
             if memory:
@@ -1583,6 +1585,7 @@ class StreamingPipeline:
         retrieval: RetrievalModule | None,
         facts: FactMemory | None = None,
         session_id: str = "default",
+        user_repeated: bool = False,
     ) -> list[dict[str, str]]:
         has_context = False
         retrieved: list[tuple[str, str | None]] = []
@@ -1620,7 +1623,11 @@ class StreamingPipeline:
         if facts is not None:
             facts_block = facts.to_block()
             if facts_block:
-                system_prompt += "\n\n" + facts_block
+                system_prompt += (
+                    "\n\nKnown facts about the user "
+                    "(treat these as authoritative; do not contradict them):\n"
+                    + facts_block
+                )
 
         if ctx.topic and ctx.turn_count > 0:
             system_prompt += f"\n\nCurrent topic: {ctx.topic}."
@@ -1638,6 +1645,21 @@ class StreamingPipeline:
             system_prompt += (
                 "\n\nThe user is continuing their previous thought. Respond "
                 "fluidly without re-introducing the topic."
+            )
+
+        if user_repeated:
+            system_prompt += (
+                "\n\nThe user is repeating or re-asking something they asked "
+                "before. Acknowledge that your previous answer didn't fully "
+                "land, then respond again with a fresh, clearer, or more "
+                "direct approach. Do not repeat your previous wording."
+            )
+
+        if ctx.topic and ctx.topic_shift and ctx.turn_count > 1:
+            system_prompt += (
+                f"\n\nThe user has switched to a new topic "
+                f"('{ctx.topic}'). Move on cleanly and don't keep referring "
+                "to the previous topic."
             )
 
         messages: list[dict[str, str]] = [

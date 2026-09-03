@@ -965,3 +965,51 @@ class TestLowEnergySilenceBackstop:
             assert p._speaking.get("sess") is True
 
         asyncio.run(run())
+
+
+class TestRepetitionAndTopicGuidance:
+    def test_user_repeated_injects_guidance(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            ctx = p._ctx("sess")
+            readable = "".join(
+                m.get("content", "") for m in await p._build_messages(
+                    "what time is it?", ctx, None, None, user_repeated=True
+                )
+                if m.get("role") == "system"
+            )
+            assert "repeating or re-asking" in readable
+
+        asyncio.run(run())
+
+    def test_topic_shift_injects_guidance(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            ctx = p._ctx("sess")
+            ctx.topic = "cooking"
+            ctx.topic_shift = True
+            ctx.turn_count = 3
+            readable = "".join(
+                m.get("content", "") for m in await p._build_messages(
+                    "how do I make pasta?", ctx, None, None
+                )
+                if m.get("role") == "system"
+            )
+            assert "switched to a new topic" in readable
+
+        asyncio.run(run())
+
+    def test_no_guidance_when_not_repeated_and_no_shift(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            ctx = p._ctx("sess")
+            readable = "".join(
+                m.get("content", "") for m in await p._build_messages(
+                    "what time is it?", ctx, None, None
+                )
+                if m.get("role") == "system"
+            )
+            assert "repeating or re-asking" not in readable
+            assert "switched to a new topic" not in readable
+
+        asyncio.run(run())
