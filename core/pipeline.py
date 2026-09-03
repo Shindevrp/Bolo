@@ -1633,7 +1633,9 @@ class StreamingPipeline:
             system_prompt += f"\n\nCurrent topic: {ctx.topic}."
         if memory and memory.summary:
             system_prompt += (
-                f"\n\nConversation summary so far:\n{memory.summary}"
+                "\n\nConversation summary so far (attributed to speakers, "
+                "'user' = the other participant, 'assistant' = you):\n"
+                + memory.summary
             )
         if ctx.intent == "correction":
             system_prompt += (

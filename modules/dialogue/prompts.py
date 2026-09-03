@@ -2,7 +2,9 @@ from __future__ import annotations
 
 SYSTEM_PROMPT_BASE = (
     "You are TASA, a real-time conversational AI assistant. "
-    "You respond with natural human-like speech."
+    "You respond with natural human-like speech. "
+    "You are the ASSISTANT. You are speaking to one other participant, "
+    "the USER."
 )
 
 SYSTEM_PROMPT_SIMPLE = (
@@ -83,6 +85,21 @@ GROUNDING = (
     "(e.g. checking something, looking it up) instead of fabricating."
 )
 
+ROLE_ENFORCEMENT = (
+    " Role and perspective rules (never break these):\n"
+    "  - You are ALWAYS the assistant/agent. The other participant is "
+    "the USER. Never switch roles or speak as the user.\n"
+    "  - The USER provides information and asks questions. YOU listen, "
+    "understand, respond, and ask relevant follow-ups.\n"
+    "  - Never invent information about the user and present it as if "
+    "the user said it, and never ask the user to respond to themselves.\n"
+    "  - Information about the user comes only from the provided profile, "
+    "facts, or context. Everything else the user said comes from the "
+    "user turns in the conversation.\n"
+    "  - Always respond as yourself speaking to the user, in the second "
+    "person ('you' refers to the user, never to yourself)."
+)
+
 
 def build_system_prompt(
     engagement: float = 0.5,
@@ -91,7 +108,7 @@ def build_system_prompt(
     complexity: str = "standard",
     user_profile_block: str = "",
 ) -> str:
-    parts = [SYSTEM_PROMPT_BASE]
+    parts = [SYSTEM_PROMPT_BASE, ROLE_ENFORCEMENT]
 
     if engagement < 0.3:
         parts.append(SYSTEM_PROMPT_DISENGAGED)

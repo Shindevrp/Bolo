@@ -30,3 +30,14 @@ class TestSystemPrompt:
     def test_grounding_block_never_fabricates(self) -> None:
         p = build_system_prompt(engagement=0.9, complexity="complex")
         assert "do not contradict it" in p
+
+    def test_role_enforcement_always_included(self) -> None:
+        p = build_system_prompt()
+        assert "Never switch roles" in p
+        assert "ALWAYS the assistant/agent" in p
+        assert "never ask the user to respond to themselves" in p
+
+    def test_base_prompt_establishes_assistant_and_user(self) -> None:
+        p = build_system_prompt()
+        assert "You are the ASSISTANT" in p
+        assert "the USER" in p
