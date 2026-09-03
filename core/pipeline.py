@@ -165,6 +165,7 @@ class StreamingPipeline:
         self._frame_buffers: dict[str, bytearray] = {}
         self._silence_ms: dict[str, float] = {}
         self._last_partial_time: dict[str, float] = {}
+        self._last_refresh_ms: dict[str, float] = {}
         self._barge_pending: dict[str, bool] = {}
         self._barge_thresholds: dict[str, float] = {}
         self._barge_frames: dict[str, int] = {}
@@ -711,24 +712,55 @@ class StreamingPipeline:
                     turn_decision = self.turn_detector.process_chunk(chunk, False)
 
                     semantic_score = 0.0
+                    incomplete = False
                     if ctx.last_partial_transcript:
-                        semantic_score = self.turn_detector.classifier._score_linguistic(
+                        classifier = self.turn_detector.classifier
+                        semantic_score = classifier._score_linguistic(
+                            ctx.last_partial_transcript
+                        )
+                        incomplete = classifier.is_incomplete(
                             ctx.last_partial_transcript
                         )
 
+                    # The user has finished a list/enumeration which we suspect
+                    # is incomplete, OR the accumulated speech is very short.
+                    # Refresh the partial before we commit to ending the turn so
+                    # we don't cut off e.g. "Is it color, function," mid-stream.
+                    if (
+                        silence_ms >= 180.0
+                        and incomplete
+                        and len(speech_buffer) > 0
+                        and silence_ms - self._last_refresh_ms.get(sid, 0.0) >= 150.0
+                    ):
+                        self._last_refresh_ms[sid] = silence_ms
+                        fresh = await self._partial_transcribe(
+                            bytes(speech_buffer), sid, ctx, sync=True
+                        )
+                        if fresh is not None:
+                            semantic_score = self.turn_detector.classifier._score_linguistic(
+                                fresh
+                            )
+                            incomplete = self.turn_detector.classifier.is_incomplete(
+                                fresh
+                            )
+
                     adaptive_threshold = 250.0
-                    if semantic_score >= 0.8:
-                        adaptive_threshold = 80.0
+                    if incomplete:
+                        # Open list / trailing connective: wait for the speaker
+                        # to finish the series before responding.
+                        adaptive_threshold = 400.0
+                    elif semantic_score >= 0.8:
+                        adaptive_threshold = 200.0
                     elif semantic_score >= 0.6:
-                        adaptive_threshold = 120.0
+                        adaptive_threshold = 220.0
                     elif semantic_score <= 0.2 and len(ctx.last_partial_transcript.split()) > 2:
                         adaptive_threshold = 300.0
                     elif turn_decision == "end_turn_force":
-                        adaptive_threshold = 100.0
-                    elif turn_decision == "end_turn":
-                        adaptive_threshold = 180.0
-                    elif ctx.engagement > 0.7:
                         adaptive_threshold = 200.0
+                    elif turn_decision == "end_turn":
+                        adaptive_threshold = 220.0
+                    elif ctx.engagement > 0.7:
+                        adaptive_threshold = 220.0
 
                     if silence_ms >= adaptive_threshold:
                         self._speaking[sid] = False
@@ -736,6 +768,7 @@ class StreamingPipeline:
                         self._barge_thresholds.pop(sid, None)
                         self._barge_frames.pop(sid, None)
                         self._interrupt_handler(sid).reset()
+                        self._last_refresh_ms.pop(sid, None)
                         audio_blob = bytes(speech_buffer)
                         self._speech_buffers[sid] = bytearray()
                         self.vad.reset()
@@ -1368,12 +1401,20 @@ class StreamingPipeline:
         self._playback_clear_tasks[session_id] = asyncio.create_task(_clear())
 
     async def _partial_transcribe(
-        self, audio_blob: bytes, session_id: str, ctx: ConversationContext
-    ) -> None:
+        self,
+        audio_blob: bytes,
+        session_id: str,
+        ctx: ConversationContext,
+        sync: bool = False,
+    ) -> str | None:
         text = await self.stt.transcribe(audio_blob)
         if text and text != ctx.last_partial_transcript:
             ctx.last_partial_transcript = text
             await self._emit(PipelineEvent.PARTIAL_TRANSCRIPT, text, session_id)
+            return text
+        if sync:
+            return text or None
+        return None
 
     def _classify_query_complexity(self, text: str) -> str:
         text_lower = text.lower().strip()

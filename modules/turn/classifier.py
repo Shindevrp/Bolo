@@ -16,6 +16,13 @@ QUESTION_WORDS = {
     "would", "should", "will", "shall", "have", "has", "had",
 }
 
+# Words/conjunctions that indicate the speaker is mid-enumeration or has not
+# yet finished an open list. Combined with a trailing comma these are strong
+# signals that the utterance is incomplete and the turn must NOT end.
+# "so"/"as"/"like" are handled separately in is_incomplete because they can
+# also terminate a completed statement ("I think so", "as is").
+HARD_TRAILING_CONNECTIVES = {"or", "and", "but", "because", "plus", "either"}
+
 
 class TurnClassifier:
     def __init__(
@@ -72,11 +79,57 @@ class TurnClassifier:
             return 0.4
         return 0.1
 
+    def is_incomplete(self, text: str) -> bool:
+        """Return True when the utterance is clearly mid-flow (an open
+        enumeration, a trailing connective, or a dangling comma) and so must
+        NOT be treated as a finished turn."""
+        if not text:
+            return False
+
+        stripped = text.strip()
+
+        # Dangling serial comma / ellipsis: "color, function,"
+        if stripped.endswith((",", "...")):
+            return True
+
+        words = stripped.split()
+        if not words:
+            return False
+
+        last = words[-1].lower().strip(".,!?")
+
+        # A hard coordination connective at the very end almost always means
+        # the speaker is about to add more ("I like red and", "x or y?").
+        if last in HARD_TRAILING_CONNECTIVES:
+            return True
+
+        # An utterance containing a serial comma pattern ("a, b, c") is a
+        # probable open list. Require >= 2 commas (a genuine running list)
+        # and no trailing terminal punctuation so a completed statement like
+        # "well, I think so." is not mistaken for a continuing series.
+        if "," in stripped and stripped[-1] not in (".", "?", "!"):
+            if stripped.count(",") >= 2:
+                return True
+
+        # Mid-list continuation markers that don't necessarily start a new
+        # clause but signal the series is not yet closed.
+        if last in ("maybe", "perhaps", "something", "another", "other",
+                    "such", "as", "like", "unless", "although"):
+            return True
+
+        return False
+
     def _score_linguistic(self, text: str) -> float:
         if not text:
             return 0.0
 
         text_lower = text.lower().strip()
+
+        # An incomplete/enumeration utterance is never a completed turn,
+        # even if it starts with a question word. Its low score makes the
+        # pipeline use a longer silence threshold so the speaker can finish.
+        if self.is_incomplete(text):
+            return 0.3
 
         if any(text_lower.endswith(w) for w in TRAILING_CONJUNCTIONS):
             return 0.1
