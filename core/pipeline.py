@@ -22,6 +22,7 @@ from modules.turn.timing import TurnTiming
 from modules.turn.topic import TopicTracker
 from modules.turn.intent import IntentClassifier
 from modules.turn.backchannel import TurnBackchannel
+from modules.turn.entity import EntityGate
 from modules.backchannel.generator import BackchannelGenerator
 from modules.backchannel.timing import BackchannelTiming
 from modules.memory.session import SessionMemory
@@ -73,6 +74,7 @@ class PipelineEvent(Enum):
     PROSODY = auto()
     INTERRUPT = auto()
     RESPONSE_DELAY = auto()
+    ENTITY_GUARD = auto()
     ERROR = auto()
 
 
@@ -1116,6 +1118,12 @@ class StreamingPipeline:
 
             full = ""
 
+            # Entities the model is legitimately allowed to reference this
+            # turn: what the user said, plus anything returned by a tool.
+            supported_entities: set[str] = set(
+                EntityGate.extract_entities(transcript)
+            )
+
             if used_speculation:
                 full = spec_full or ""
                 ctx.dialogue_state = DialogueState.INTERRUPTIBLE
@@ -1211,6 +1219,10 @@ class StreamingPipeline:
                             "role": "tool",
                             "content": f"{tr['tool']} result: {tr['result']}",
                         })
+                        if not tr.get("failed"):
+                            supported_entities.update(
+                                EntityGate.extract_entities(str(tr["result"]))
+                            )
                     if any(tr.get("failed") for tr in tool_results):
                         followup_messages.append({
                             "role": "user",
@@ -1285,6 +1297,32 @@ class StreamingPipeline:
 
             if tts_worker:
                 await tts_worker
+
+            # Layer-2 entity guard: if this was an entity-seeking query and the
+            # final answer asserted a specific place/business name that was not
+            # provided by the user, a tool result, or retrieval, treat it as a
+            # possible hallucination. Speak an honest correction, surface an
+            # ENTITY_GUARD event, and keep the fabrication out of memory so it
+            # can't later be re-injected as authoritative.
+            fabricated = self._verify_entity_assertions(
+                transcript, full, supported_entities
+            )
+            if fabricated:
+                safe = EntityGate.safety_response(fabricated)
+                logger.warning(
+                    f"entity guard blocked fabricated names session={session_id}"
+                    f" names={fabricated}"
+                )
+                await self._emit(
+                    PipelineEvent.ENTITY_GUARD, "\n".join(fabricated), session_id
+                )
+                if not int_ev.is_set():
+                    for c in chunker.feed(safe):
+                        await push(1, self._tool_registry.strip_calls(c))
+                    tail = chunker.flush()
+                    if tail:
+                        await push(1, self._tool_registry.strip_calls(tail))
+                full = safe
 
             if memory:
                 memory.add("assistant", full)
@@ -1577,6 +1615,29 @@ class StreamingPipeline:
         except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
             pass
 
+    def _verify_entity_assertions(
+        self,
+        transcript: str,
+        final_text: str,
+        supported: set[str],
+    ) -> list[str]:
+        """Return fabricated (unsupported) entities asserted in `final_text`.
+
+        Runs only for entity-seeking queries. `supported` holds names that came
+        from tool results, retrieval, or the user's own words — anything else
+        that looks like a specific place/business name is treated as a possible
+        hallucination so the pipeline can refuse to let it stand.
+        """
+        if not EntityGate.query_needs_verification(transcript):
+            return []
+        return EntityGate.unsupported_entities(
+            final_text,
+            supported,
+            user_input_entities={
+                e for e in EntityGate.extract_entities(transcript)
+            },
+        )
+
     async def _build_messages(
         self,
         transcript: str,
@@ -1619,6 +1680,25 @@ class StreamingPipeline:
         tool_block = self._tool_registry.system_prompt_block()
         if tool_block:
             system_prompt += tool_block
+
+        # Entity queries (specific place/business/entity) MUST be verified via
+        # a search_web round-trip before any concrete name is spoken. Without
+        # this hard upstream gate the model can fabricate plausible-looking
+        # restaurant/place names that then stream straight to TTS.
+        if EntityGate.query_needs_verification(transcript):
+            system_prompt += (
+                "\n\nENTITY VERIFICATION (mandatory):\n"
+                "The user is asking about a specific place, business, or named "
+                "entity. You MUST output exactly one tool call "
+                "{tool:search_web(query)} and wait for its result before naming "
+                "any specific place, restaurant, shop, or business.\n"
+                "  - NEVER name, recommend, or describe a specific place, "
+                "restaurant, shop, or business unless its name came from the "
+                "search_web result in this turn.\n"
+                "  - If you do not have a verified name, say you're not sure "
+                "and offer to look it up — never invent one.\n"
+                "  - Do not produce any other text before the tool call."
+            )
 
         if facts is not None:
             facts_block = facts.to_block()
