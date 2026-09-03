@@ -15,7 +15,7 @@ from modules.emotion.classifier import EmotionClassifier
 from providers.stt.base import STTProvider
 from providers.llm.base import LLMProvider
 from providers.tts.base import TTSProvider
-from modules.vad.silero_vad import SileroVAD
+from modules.vad.silero_vad import HysteresisVAD, SileroVAD
 from modules.turn.detector import TurnDetector
 from modules.turn.interrupt import InterruptHandler
 from modules.turn.timing import TurnTiming
@@ -122,11 +122,31 @@ class StreamingPipeline:
         backchannel_generator: BackchannelGenerator | None = None,
         backchannel_timing: BackchannelTiming | None = None,
         emotion_classifier: EmotionClassifier | None = None,
+        *,
+        use_hysteresis_vad: bool = True,
+        endpoint_short_ms: int = 350,
+        endpoint_normal_ms: int = 450,
+        endpoint_hesitation_ms: int = 550,
+        endpoint_safety_cap_ms: int = 900,
+        endpoint_short_utterance_ms: int = 1500,
+        min_speech_duration_ms: int = 500,
     ) -> None:
         self.stt = stt
         self.llm = llm
         self.tts = tts
+        if (
+            use_hysteresis_vad
+            and not isinstance(vad, HysteresisVAD)
+            and isinstance(vad, SileroVAD)
+        ):
+            vad = HysteresisVAD(vad, sample_rate=getattr(vad, "sample_rate", 16000))
         self.vad = vad
+        self.endpoint_short_ms = endpoint_short_ms
+        self.endpoint_normal_ms = endpoint_normal_ms
+        self.endpoint_hesitation_ms = endpoint_hesitation_ms
+        self.endpoint_safety_cap_ms = endpoint_safety_cap_ms
+        self.endpoint_short_utterance_ms = endpoint_short_utterance_ms
+        self.min_speech_duration_ms = min_speech_duration_ms
         self.turn_detector = turn_detector or TurnDetector()
         self.interrupt_handler = interrupt_handler or InterruptHandler()
         self.turn_timing = turn_timing or TurnTiming()
@@ -167,6 +187,7 @@ class StreamingPipeline:
         self._speech_buffers: dict[str, bytearray] = {}
         self._frame_buffers: dict[str, bytearray] = {}
         self._silence_ms: dict[str, float] = {}
+        self._speech_ms: dict[str, float] = {}
         self._last_partial_time: dict[str, float] = {}
         self._last_refresh_ms: dict[str, float] = {}
         self._partial_inflight: dict[str, bool] = {}
@@ -258,6 +279,7 @@ class StreamingPipeline:
         self._speaking.clear()
         self._speech_buffers.clear()
         self._silence_ms.clear()
+        self._speech_ms.clear()
         self._last_partial_time.clear()
         self._barge_pending.clear()
         self._barge_thresholds.clear()
@@ -328,6 +350,7 @@ class StreamingPipeline:
         self._speech_buffers.pop(session_id, None)
         self._frame_buffers.pop(session_id, None)
         self._silence_ms.pop(session_id, None)
+        self._speech_ms.pop(session_id, None)
         self._last_partial_time.pop(session_id, None)
         self._last_refresh_ms.pop(session_id, None)
         self._partial_inflight.pop(session_id, None)
@@ -638,6 +661,9 @@ class StreamingPipeline:
                     self._speaking[sid] = True
                     ctx.dialogue_state = DialogueState.LISTENING
                     self._silence_ms[sid] = 0.0
+                    self._speech_ms[sid] = len(chunk) / (
+                        self.vad.sample_rate * 2 / 1000
+                    )
                     self._low_energy_frames[sid] = 0
                     self._speech_buffers[sid] = bytearray(chunk)
                     speech_buffer = self._speech_buffers[sid]
@@ -651,6 +677,10 @@ class StreamingPipeline:
                     await self._emit(PipelineEvent.SPEECH_START, session_id=sid)
                 else:
                     self._silence_ms[sid] = 0.0
+                    self._speech_ms[sid] = (
+                        self._speech_ms.get(sid, 0.0)
+                        + len(chunk) / (self.vad.sample_rate * 2 / 1000)
+                    )
                     speech_buffer.extend(chunk)
                     energy = rms_energy(bytes(chunk)) / 32768.0
                     playback_on = self._playback_active.get(sid, False)
@@ -777,25 +807,38 @@ class StreamingPipeline:
                                 fresh
                             )
 
-                    adaptive_threshold = 250.0
-                    if incomplete:
-                        # Open list / trailing connective: wait for the speaker
-                        # to finish the series before responding.
-                        adaptive_threshold = 400.0
-                    elif semantic_score >= 0.8:
-                        adaptive_threshold = 200.0
-                    elif semantic_score >= 0.6:
-                        adaptive_threshold = 220.0
-                    elif semantic_score <= 0.2 and len(ctx.last_partial_transcript.split()) > 2:
-                        adaptive_threshold = 300.0
-                    elif turn_decision == "end_turn_force":
-                        adaptive_threshold = 200.0
-                    elif turn_decision == "end_turn":
-                        adaptive_threshold = 220.0
-                    elif ctx.engagement > 0.7:
-                        adaptive_threshold = 220.0
+                    # Evidence-based adaptive endpointing. The commit decision
+                    # is gated on BOTH a minimum speech duration (so a blip or
+                    # very short sound is never cut off) AND an adaptive silence
+                    # threshold that reflects how complete the utterance sounds.
+                    speech_dur_ms = self._speech_ms.get(sid, 0.0)
+                    trajectory = self.turn_detector.prosody_analyzer.analyze().get(
+                        "trajectory", "neutral"
+                    )
 
-                    if silence_ms >= adaptive_threshold:
+                    endpoint_ms = self.endpoint_normal_ms
+                    if incomplete or trajectory == "rising":
+                        # Speaker is mid-flow / building toward more; give them
+                        # room to finish the thought or enumeration.
+                        endpoint_ms = self.endpoint_hesitation_ms
+                    elif (
+                        turn_decision == "end_turn_force"
+                        and semantic_score >= 0.8
+                        and speech_dur_ms <= self.endpoint_short_utterance_ms
+                        and trajectory == "falling"
+                    ):
+                        # Clearly completed short utterance - respond briskly.
+                        endpoint_ms = self.endpoint_short_ms
+
+                    # Safety cap: never wait longer than this so long pauses
+                    # don't feel sluggish.
+                    endpoint_ms = min(endpoint_ms, self.endpoint_safety_cap_ms)
+
+                    speech_long_enough = (
+                        speech_dur_ms >= self.min_speech_duration_ms
+                    )
+
+                    if speech_long_enough and silence_ms >= endpoint_ms:
                         self._speaking[sid] = False
                         self._barge_pending[sid] = False
                         self._barge_thresholds.pop(sid, None)

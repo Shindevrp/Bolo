@@ -927,7 +927,7 @@ class TestLowEnergySilenceBackstop:
             col_task = asyncio.create_task(collect())
             for _ in range(4):
                 await p.push_audio(_const_energy_chunk(32639), "sess")
-            for _ in range(4):
+            for _ in range(8):
                 await p.push_audio(b"\x00" * FRAME_BYTES, "sess")
             await asyncio.sleep(0.3)
             p._running = False
