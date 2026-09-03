@@ -209,6 +209,24 @@ class TestSegmentCleanup:
         asyncio.run(run())
 
 
+class TestNoiseTranscriptGuard:
+    def test_pure_punctuation_is_noise(self) -> None:
+        assert StreamingPipeline._looks_like_noise("...")
+        assert StreamingPipeline._looks_like_noise("?!!!")
+
+    def test_digits_only_is_noise(self) -> None:
+        assert StreamingPipeline._looks_like_noise("123 456")
+
+    def test_empty_is_noise(self) -> None:
+        assert StreamingPipeline._looks_like_noise("")
+        assert StreamingPipeline._looks_like_noise("   ")
+
+    def test_real_speech_is_not_noise(self) -> None:
+        assert not StreamingPipeline._looks_like_noise("what time is it?")
+        assert not StreamingPipeline._looks_like_noise("stop")
+        assert not StreamingPipeline._looks_like_noise("um, maybe the red one")
+
+
 class TestBackgroundTopicLabeling:
     def test_labels_current_topic_in_background(self) -> None:
         async def run() -> str | None:
