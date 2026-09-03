@@ -166,6 +166,7 @@ class StreamingPipeline:
         self._silence_ms: dict[str, float] = {}
         self._last_partial_time: dict[str, float] = {}
         self._last_refresh_ms: dict[str, float] = {}
+        self._partial_inflight: dict[str, bool] = {}
         self._barge_pending: dict[str, bool] = {}
         self._barge_thresholds: dict[str, float] = {}
         self._barge_frames: dict[str, int] = {}
@@ -325,6 +326,8 @@ class StreamingPipeline:
         self._frame_buffers.pop(session_id, None)
         self._silence_ms.pop(session_id, None)
         self._last_partial_time.pop(session_id, None)
+        self._last_refresh_ms.pop(session_id, None)
+        self._partial_inflight.pop(session_id, None)
         self._barge_pending.pop(session_id, None)
         self._barge_thresholds.pop(session_id, None)
         self._barge_frames.pop(session_id, None)
@@ -636,6 +639,10 @@ class StreamingPipeline:
                     self._speech_buffers[sid] = bytearray(chunk)
                     speech_buffer = self._speech_buffers[sid]
                     self._last_partial_time[sid] = time.time()
+                    # Discard the previous utterance's partial transcript so
+                    # turn-end detection and speculative LLM for this new
+                    # utterance never reuse stale text from the prior turn.
+                    ctx.last_partial_transcript = ""
                     self.turn_detector.reset()
                     self.vad.reset()
                     await self._emit(PipelineEvent.SPEECH_START, session_id=sid)
@@ -702,8 +709,10 @@ class StreamingPipeline:
                 if (
                     now - self._last_partial_time.get(sid, 0.0)
                     >= partial_transcript_interval
+                    and not self._partial_inflight.get(sid, False)
                 ):
                     self._last_partial_time[sid] = now
+                    self._partial_inflight[sid] = True
                     partial_blob = bytes(speech_buffer)
                     asyncio.create_task(
                         self._partial_transcribe(partial_blob, sid, ctx)
@@ -829,6 +838,16 @@ class StreamingPipeline:
         overlap = len(set(words) & last_words) / len(words)
         return overlap >= 0.6
 
+    @staticmethod
+    def _looks_like_noise(transcript: str) -> bool:
+        """True when the transcript contains no letter-bearing word (pure
+        punctuation/symbols/digit-only tokens), i.e. STT fired on noise rather
+        than real speech and we should not respond to it."""
+        if not transcript:
+            return True
+        words = [w for w in transcript.split() if any(ch.isalpha() for ch in w)]
+        return not words
+
     async def _maybe_fire_barge(
         self, sid: str, ctx: ConversationContext, energy: float
     ) -> None:
@@ -918,6 +937,15 @@ class StreamingPipeline:
             if self._looks_like_echo(session_id, transcript):
                 logger.debug(
                     f"dropped echo-looking transcript session={session_id}"
+                    f" transcript={transcript!r}"
+                )
+                if spec_task:
+                    spec_task.cancel()
+                return
+
+            if self._looks_like_noise(transcript):
+                logger.debug(
+                    f"dropped noise-looking transcript session={session_id}"
                     f" transcript={transcript!r}"
                 )
                 if spec_task:
@@ -1436,14 +1464,20 @@ class StreamingPipeline:
         ctx: ConversationContext,
         sync: bool = False,
     ) -> str | None:
-        text = await self.stt.transcribe(audio_blob)
-        if text and text != ctx.last_partial_transcript:
-            ctx.last_partial_transcript = text
-            await self._emit(PipelineEvent.PARTIAL_TRANSCRIPT, text, session_id)
-            return text
-        if sync:
-            return text or None
-        return None
+        try:
+            text = await self.stt.transcribe(audio_blob)
+            if text and text != ctx.last_partial_transcript:
+                ctx.last_partial_transcript = text
+                await self._emit(PipelineEvent.PARTIAL_TRANSCRIPT, text, session_id)
+                return text
+            if sync:
+                return text or None
+            return None
+        finally:
+            # Background partials set the in-flight guard; clear it so the
+            # next partial can be scheduled once the transcript is ready.
+            if not sync:
+                self._partial_inflight.pop(session_id, None)
 
     def _classify_query_complexity(self, text: str) -> str:
         text_lower = text.lower().strip()
