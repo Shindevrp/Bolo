@@ -21,3 +21,12 @@ class TestSystemPrompt:
     def test_ongoing_context_after_many_turns(self) -> None:
         p = build_system_prompt(turn_count=5)
         assert "ongoing conversation" in p
+
+    def test_grounding_block_always_included(self) -> None:
+        p = build_system_prompt()
+        assert "Never invent facts" in p
+        assert "aren't sure rather than guessing" in p
+
+    def test_grounding_block_never_fabricates(self) -> None:
+        p = build_system_prompt(engagement=0.9, complexity="complex")
+        assert "do not contradict it" in p

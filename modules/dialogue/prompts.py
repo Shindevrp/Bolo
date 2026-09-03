@@ -70,6 +70,19 @@ ONGOING_CONVERSATION = (
     "exchanges naturally without explicitly mentioning 'as we discussed'."
 )
 
+GROUNDING = (
+    " Grounding and honesty rules:\n"
+    "  - Only assert facts you are confident about. Never invent facts, "
+    "numbers, people, timings, or details.\n"
+    "  - If asked about something outside your knowledge and no "
+    "context/facts/tool data supports an answer, say plainly that you "
+    "aren't sure rather than guessing.\n"
+    "  - Use the provided context and facts block as your source of truth "
+    "about the user and the conversation; do not contradict it.\n"
+    "  - When you don't have a reliable answer, offer a concrete next step "
+    "(e.g. checking something, looking it up) instead of fabricating."
+)
+
 
 def build_system_prompt(
     engagement: float = 0.5,
@@ -101,6 +114,8 @@ def build_system_prompt(
 
     if turn_count > 3:
         parts.append(ONGOING_CONVERSATION)
+
+    parts.append(GROUNDING)
 
     if has_context:
         parts.append(
