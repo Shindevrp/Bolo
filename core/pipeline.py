@@ -23,6 +23,7 @@ from modules.turn.topic import TopicTracker
 from modules.turn.intent import IntentClassifier
 from modules.turn.backchannel import TurnBackchannel
 from modules.turn.entity import EntityGate
+from modules.turn.backchannel_interrupt import BackchannelInterrupt
 from modules.backchannel.generator import BackchannelGenerator
 from modules.backchannel.timing import BackchannelTiming
 from modules.memory.session import SessionMemory
@@ -855,6 +856,32 @@ class StreamingPipeline:
     ) -> None:
         if not self._barge_pending.get(sid, False):
             return
+
+        # Lexical gate: if a partial transcript is already available, decide
+        # from its content whether this speech is a genuine interruption.
+        partial = (ctx.last_partial_transcript or "").strip()
+        if partial:
+            lexical = BackchannelInterrupt.classify(partial)
+            if lexical == "backchannel":
+                # Conversational feedback ("yeah", "uh-huh", "right", "okay")
+                # should NOT cancel our response. Keep the response going.
+                self._barge_pending[sid] = False
+                self._barge_thresholds.pop(sid, None)
+                self._barge_frames.pop(sid, None)
+                self._interrupt_handler(sid).reset()
+                return
+            if lexical == "disagreement":
+                # Firm interruption ("no", "stop", "wait", "that's wrong"):
+                # cancel immediately regardless of accumulated speech frames.
+                self._barge_pending[sid] = False
+                self._barge_thresholds.pop(sid, None)
+                self._barge_frames.pop(sid, None)
+                self._interrupt_handler(sid).reset()
+                await self.signal_interrupt(sid)
+                ctx.dialogue_state = DialogueState.LISTENING
+                await self._emit(PipelineEvent.INTERRUPT, session_id=sid)
+                return
+
         handler = self._interrupt_handler(sid)
         threshold = self._barge_thresholds.get(
             sid, self.interrupt_handler.speech_energy_threshold
