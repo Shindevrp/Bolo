@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "TASA Runtime Architecture",
+    "quality_profile": "showcase",
+    "viewBox": [1200, 760]
+  },
+  "components": [
+    { "id": "fsm", "type": "security", "label": "DialogueState", "sublabel": "guarded HSM", "pos": [520, 80], "size": [150, 56] },
+    { "id": "stt", "type": "external", "label": "faster-whisper", "sublabel": "STT · CTranslate2", "pos": [900, 80], "size": [150, 56] },
+    { "id": "obs", "type": "frontend", "label": "Session & Dashboard", "sublabel": "registry + Streamlit", "pos": [60, 620], "size": [150, 60] },
+    { "id": "client", "type": "frontend", "label": "Client UIs", "sublabel": "ui / mic / webrtc", "pos": [40, 360], "size": [150, 64] },
+    { "id": "lsrv", "type": "backend", "label": "FastAPI Server", "sublabel": "WebSocket + WebRTC routes", "pos": [260, 360], "size": [150, 64] },
+    { "id": "pipe", "type": "backend", "label": "StreamingPipeline", "sublabel": "Listen → Think → Speak", "pos": [520, 360], "size": [180, 64] },
+    { "id": "llm", "type": "external", "label": "vLLM / Ollama", "sublabel": "OpenAI-compatible", "pos": [980, 360], "size": [150, 64] },
+    { "id": "ctx", "type": "backend", "label": "Context Engine", "sublabel": "topic / intent / emotion / memory", "pos": [560, 620], "size": [180, 60] },
+    { "id": "tts", "type": "external", "label": "Piper TTS", "sublabel": "local synthesis", "pos": [900, 620], "size": [150, 60] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Runtime Core", "wraps": ["lsrv", "pipe", "ctx", "obs", "fsm"] },
+    { "kind": "security-group", "label": "Agent Orchestration", "wraps": ["pipe", "ctx", "fsm"] },
+    { "kind": "region", "label": "AI Providers", "wraps": ["stt", "llm", "tts"] }
+  ],
+  "connections": [
+    { "id": "client-lsrv", "from": "client", "to": "lsrv", "label": "PCM / Opus stream", "variant": "emphasis", "labelAt": [225, 438] },
+    { "id": "lsrv-pipe", "from": "lsrv", "to": "pipe", "label": "audio frames" },
+    { "id": "pipe-fsm", "from": "pipe", "to": "fsm", "label": "state transitions", "fromSide": "top", "toSide": "bottom", "labelDx": -55 },
+    { "id": "pipe-stt", "from": "pipe", "to": "stt", "label": "final transcription", "fromSide": "top", "toSide": "left" },
+    { "id": "pipe-llm", "from": "pipe", "to": "llm", "label": "token stream", "fromSide": "right", "toSide": "left" },
+    { "id": "pipe-ctx", "from": "pipe", "to": "ctx", "label": "transcripts + events", "fromSide": "bottom", "toSide": "top", "labelAt": [505, 550] },
+    { "id": "ctx-pipe", "from": "ctx", "to": "pipe", "label": "topic + intent + retrieval", "variant": "dashed", "fromSide": "top", "toSide": "bottom", "labelAt": [770, 560] },
+    { "id": "pipe-tts", "from": "pipe", "to": "tts", "label": "sentence chunks", "fromSide": "bottom", "toSide": "left" },
+    { "id": "obs-lsrv", "from": "obs", "to": "lsrv", "label": "session state + metrics", "variant": "dashed", "fromSide": "top", "toSide": "bottom" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Listen",
+      "items": [
+        "WebSocket PCM / WebRTC Opus → Silero VAD + adaptive turn detection"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Think",
+      "items": [
+        "Memory + retrieval + intent/emotion → speculative LLM on partial transcripts"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Speak",
+      "items": [
+        "Prosody Piper TTS, tool calling, ~350ms first audio, dashboard + latency metrics"
+      ]
+    }
+  ]
+}

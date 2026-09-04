@@ -52,6 +52,19 @@ TASA is not a command-response bot. It is a **conversational partner** that:
 <a name="architecture"></a>
 ## System Architecture
 
+> **Interactive runtime diagram:** open [`assets/tasa-architecture.html`](assets/tasa-architecture.html)
+> for a self-contained, interactive architecture view (pan/zoom, focus, theme,
+> relationship tracing) of the high-level runtime — the same Listen → Think →
+> Speak pipeline shown below. From a terminal, just run:
+>
+> ```bash
+> xdg-open assets/tasa-architecture.html   # Linux
+> open assets/tasa-architecture.html       # macOS
+> ```
+>
+> The file is fully self-contained (no server required) — you can also open it
+> directly in any browser or double-click it in your file manager.
+
 ```mermaid
 flowchart TB
     subgraph Client["Client (Browser)"]
@@ -752,6 +765,9 @@ tasa/
 │   ├── scoring/                # Judge (LLM), WER, entity scan, aggregate, report
 │   └── tests/                  # Harness reproducibility tests
 ├── report.json                 # Canonical benchmark result (74.5 / 100)
+├── assets/                     # Static brand + diagram artifacts
+│   ├── tasa-cover.svg          # Cover illustration for the README header
+│   └── tasa-architecture.html  # Interactive runtime architecture diagram
 ├── tests/                      # 252 unit tests across 20 files
 ├── utils/                      # Shared utilities (audio, logger, timers)
 ├── models/                     # Local TTS voices (en_US-lessac-medium.onnx)
