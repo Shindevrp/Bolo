@@ -1,0 +1,28 @@
+{
+  "id": "context",
+  "name": "Multi-Turn Context Retention, Corrections, Contradictions",
+  "category": "context",
+  "corpus": "",
+  "meta": {"regression_id": "CTX-001", "metrics": ["context", "correction"]},
+  "steps": [
+    {"kind": "speak", "text": "My trip is for three people", "pause_after_ms": 800},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 12000},
+    {"kind": "drain", "timeout_ms": 6000},
+
+    {"kind": "speak", "text": "We want to keep it under six thousand rupees", "pause_after_ms": 800},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 12000},
+    {"kind": "drain", "timeout_ms": 6000},
+
+    {"kind": "speak", "text": "We prefer nature and short hikes", "pause_after_ms": 800},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 12000},
+    {"kind": "drain", "timeout_ms": 6000},
+
+    {"kind": "speak", "text": "Actually, we're five people now", "pause_after_ms": 800},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 12000},
+    {"kind": "drain", "timeout_ms": 6000},
+
+    {"kind": "speak", "text": "Given everything I've told you, what would you recommend?", "pause_after_ms": 900},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 12000},
+    {"kind": "drain", "timeout_ms": 15000}
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "backchannel",
+  "name": "Backchannel Must Not Interrupt",
+  "category": "barge_in",
+  "corpus": "",
+  "meta": {"regression_id": "BC-001", "metrics": ["barge_in", "backchannel"]},
+  "steps": [
+    {"kind": "speak", "text": "Tell me about good hiking trails near the city", "pause_after_ms": 900},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 12000},
+    {"kind": "interrupt_during_playback", "text": "yeah uh-huh right", "timeout_ms": 15000, "detail": "backchannel spoken during playback"},
+    {"kind": "drain", "timeout_ms": 5000},
+    {"kind": "expect", "event": "interrupt", "timeout_ms": 6000, "absent": true, "detail": "backchannel must NOT trigger an interrupt"}
+  ]
+}

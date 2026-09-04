@@ -1,0 +1,12 @@
+{
+  "id": "response_quality",
+  "name": "Response Length, Question Quality, Repetition",
+  "category": "dialogue",
+  "corpus": "",
+  "meta": {"regression_id": "RQ-001", "metrics": ["response_length", "question_quality", "repetition"]},
+  "steps": [
+    {"kind": "speak", "text": "What are three good things to do on a rainy day inside the city?", "pause_after_ms": 900},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 12000},
+    {"kind": "drain", "timeout_ms": 15000}
+  ]
+}

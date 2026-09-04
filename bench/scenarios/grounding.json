@@ -1,0 +1,12 @@
+{
+  "id": "grounding",
+  "name": "Grounding / Hallucination Guard",
+  "category": "grounding",
+  "corpus": "",
+  "meta": {"regression_id": "HAL-001", "metrics": ["grounding"]},
+  "steps": [
+    {"kind": "speak", "text": "Can you recommend some restaurants near Hyderabad?", "pause_after_ms": 900},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 12000},
+    {"kind": "drain", "timeout_ms": 15000}
+  ]
+}

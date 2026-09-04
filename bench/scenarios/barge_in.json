@@ -1,0 +1,17 @@
+{
+  "id": "barge_in",
+  "name": "Barge-In / Interruption Handling",
+  "category": "barge_in",
+  "corpus": "",
+  "meta": {"regression_id": "BI-001", "metrics": ["barge_in", "interrupt_latency"]},
+  "steps": [
+    {"kind": "speak", "text": "Can you recommend some places for a weekend trip?", "pause_after_ms": 900},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 12000},
+    {"kind": "interrupt_during_playback", "text": "Wait, no, that's not what I meant", "timeout_ms": 15000},
+    {"kind": "expect", "event": "interrupt", "timeout_ms": 5000, "detail": "agent detected the interruption"},
+    {"kind": "drain", "timeout_ms": 6000},
+
+    {"kind": "speak", "text": "Actually change that, I want somewhere quieter", "pause_after_ms": 900},
+    {"kind": "drain", "timeout_ms": 6000}
+  ]
+}

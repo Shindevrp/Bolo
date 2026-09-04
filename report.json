@@ -1,0 +1,245 @@
+{
+  "agent": "full-fix-v2",
+  "benchmark": 74.5,
+  "scores": {
+    "Turn-taking": 10.0,
+    "Barge-in": 10.0,
+    "ASR/Segmentation": 9.0,
+    "Context/State": 7.0,
+    "Intent understanding": 9.0,
+    "Dialogue flow": 5.0,
+    "Grounding": 9.0,
+    "Error recovery": 3.0,
+    "TTS quality": 6.0,
+    "Latency": 6.0,
+    "Naturalness": 4.0,
+    "Backchannel handling": 4.0
+  },
+  "weighted": {
+    "Turn-taking": 10,
+    "Barge-in": 15,
+    "ASR/Segmentation": 10,
+    "Context/State": 10,
+    "Intent understanding": 8,
+    "Dialogue flow": 8,
+    "Grounding": 10,
+    "Error recovery": 7,
+    "TTS quality": 7,
+    "Latency": 5,
+    "Naturalness": 5,
+    "Backchannel handling": 5
+  },
+  "issues": {
+    "critical": [],
+    "major": [
+      "[context] Final recommendation did not reference updated group size (five) after the 3\u21925 correction (CTX-001)."
+    ],
+    "minor": [
+      "[context] Final recommendation did not reflect the 'nature/short hikes' preference.",
+      "[grounding] No explicit uncertainty phrasing observed in the entity-seeking response.",
+      "[latency] Flower unobservable in 'asr_wer'.",
+      "[latency] Flower unobservable in 'baseline'.",
+      "[latency] Flower unobservable in 'context'.",
+      "[latency] Flower unobservable in 'grounding'.",
+      "[latency] Flower unobservable in 'recovery'.",
+      "[latency] Flower unobservable in 'response_quality'.",
+      "[latency] Flower unobservable in 'robustness'.",
+      "[latency] Flower unobservable in 'topic_switch'.",
+      "[latency] Flower unobservable in 'turn_taking'.",
+      "[latency] Flower unobservable in 'uncertainty'."
+    ]
+  },
+  "positives": [
+    "[turn_taking] Turn-end respected in 2 scenario(s); no early pre-empt observed.",
+    "[barge_in] Interrupt detected during playback and agent recovered.",
+    "[backchannel] Backchannel did not interrupt playback.",
+    "[asr] Low WER across corpus (11.8%).",
+    "[context] User turns were transcribed and the 'given everything' question was answered."
+  ],
+  "repeated_patterns": [
+    "Chronic weakness in Error recovery (score 3.0).",
+    "Chronic weakness in Naturalness (score 4.0).",
+    "Chronic weakness in Backchannel handling (score 4.0)."
+  ],
+  "priorities": [
+    "Error recovery",
+    "Naturalness",
+    "Backchannel handling",
+    "Dialogue flow / context switching",
+    "Response latency",
+    "Conversation state management",
+    "ASR segmentation / WER",
+    "Grounding & hallucination guard",
+    "Barge-in reliability",
+    "End-of-turn detection"
+  ],
+  "judge_active": true,
+  "regression_tests": [
+    {
+      "id": "ASR-001",
+      "scenario": "asr_wer",
+      "utterance": "(LibriSpeech clip)",
+      "expected": "ASR transcript closely matches ground truth",
+      "observed": "WER 11.8%",
+      "pass": true,
+      "severity": "minor",
+      "category": "ASR/Segmentation"
+    },
+    {
+      "id": "BI-001",
+      "scenario": "barge_in",
+      "utterance": "Wait, no, that's not what I meant",
+      "expected": "Interrupt detected; TTS stops; new turn accepted",
+      "observed": "INTERRUPT fired",
+      "pass": true,
+      "severity": "major",
+      "category": "Barge-in"
+    },
+    {
+      "id": "BC-001",
+      "scenario": "backchannel",
+      "utterance": "yeah uh-huh right",
+      "expected": "Backchannel does NOT trigger interrupt",
+      "observed": "INTERRUPT none",
+      "pass": true,
+      "severity": "minor",
+      "category": "Backchannel handling"
+    },
+    {
+      "id": "CTX-001",
+      "scenario": "context",
+      "utterance": "given everything, what would you recommend?",
+      "expected": "Recommendation reflects five people, budget, nature",
+      "observed": "5 referenced",
+      "pass": true,
+      "severity": "minor",
+      "category": "Context/State"
+    },
+    {
+      "id": "HAL-001",
+      "scenario": "grounding",
+      "utterance": "restaurants near Hyderabad",
+      "expected": "Agent expresses uncertainty / does not fabricate",
+      "observed": "unsupported entities none; uncertainty=False",
+      "pass": true,
+      "severity": "minor",
+      "category": "Grounding"
+    },
+    {
+      "id": "REC-001",
+      "scenario": "recovery",
+      "utterance": "no, that's not what I meant, I wanted a restaurant",
+      "expected": "Agent acknowledges and re-interprets, continues naturally",
+      "observed": "transcript + response captured",
+      "pass": true,
+      "severity": "minor",
+      "category": "Error recovery"
+    }
+  ],
+  "scenario_details": {
+    "asr_wer": {
+      "ok": true,
+      "llm": "",
+      "error": ""
+    },
+    "backchannel": {
+      "ok": true,
+      "llm": "",
+      "error": ""
+    },
+    "barge_in": {
+      "ok": true,
+      "llm": "",
+      "error": ""
+    },
+    "baseline": {
+      "ok": true,
+      "llm": "",
+      "error": ""
+    },
+    "context": {
+      "ok": true,
+      "llm": "",
+      "error": ""
+    },
+    "grounding": {
+      "ok": true,
+      "llm": "",
+      "error": ""
+    },
+    "recovery": {
+      "ok": true,
+      "llm": "",
+      "error": ""
+    },
+    "response_quality": {
+      "ok": true,
+      "llm": "",
+      "error": ""
+    },
+    "robustness": {
+      "ok": true,
+      "llm": "",
+      "error": ""
+    },
+    "topic_switch": {
+      "ok": true,
+      "llm": "",
+      "error": ""
+    },
+    "turn_taking": {
+      "ok": false,
+      "llm": "",
+      "error": ""
+    },
+    "uncertainty": {
+      "ok": false,
+      "llm": "",
+      "error": ""
+    }
+  },
+  "metadata": {
+    "agent_kind": "tasa-ws",
+    "base_url": "ws://localhost:8000/ws/audio",
+    "scenarios": [
+      "asr_wer",
+      "backchannel",
+      "barge_in",
+      "baseline",
+      "context",
+      "grounding",
+      "recovery",
+      "response_quality",
+      "robustness",
+      "topic_switch",
+      "turn_taking",
+      "uncertainty"
+    ],
+    "n_repeats": 1,
+    "wer": {
+      "wer": 0.1176,
+      "items": 2,
+      "errors": 4,
+      "words": 34,
+      "per_item": [
+        {
+          "reference": "MISTER QUILTER IS THE APOSTLE OF THE MIDDLE CLASSES AND WE ARE GLAD TO WELCOME HIS GOSPEL",
+          "hypothesis": "The filter is the apostle of the middle classes, and we are glad to welcome his gospel.",
+          "wer": 0.11764705882352941
+        },
+        {
+          "reference": "MISTER QUILTER IS THE APOSTLE OF THE MIDDLE CLASSES AND WE ARE GLAD TO WELCOME HIS GOSPEL",
+          "hypothesis": "The filter is the apostle of the middle classes, and we are glad to welcome his gospel.",
+          "wer": 0.11764705882352941
+        }
+      ]
+    },
+    "judge_active": true,
+    "corpus_sources": {
+      "librispeech": "librispeech",
+      "commonvoice": "commonvoice"
+    },
+    "timestamp": "2026-09-04 09:58:00"
+  },
+  "markdown": "# Benchmark Report \u2014 full-fix-v2\n\n**Overall benchmark score: 74.5 / 100**\n\n## Category Scores (1-10)\n\n| Category | Score | Weight | Weighted |\n|---|---|---|---|\n| Turn-taking | 10.0 | 10 | **100.0 / 10** |\n| Barge-in | 10.0 | 15 | **150.0 / 15** |\n| ASR/Segmentation | 9.0 | 10 | **90.0 / 10** |\n| Context/State | 7.0 | 10 | **70.0 / 10** |\n| Intent understanding | 9.0 | 8 | **72.0 / 8** |\n| Dialogue flow | 5.0 | 8 | **40.0 / 8** |\n| Grounding | 9.0 | 10 | **90.0 / 10** |\n| Error recovery | 3.0 | 7 | **21.0 / 7** |\n| TTS quality | 6.0 | 7 | **42.0 / 7** |\n| Latency | 6.0 | 5 | **30.0 / 5** |\n| Naturalness | 4.0 | 5 | **20.0 / 5** |\n| Backchannel handling | 4.0 | 5 | **20.0 / 5** |\n\n## Critical Failures\n\n_None observed._\n\n## Major Issues\n\n- [context] Final recommendation did not reference updated group size (five) after the 3\u21925 correction (CTX-001).\n\n## Minor Issues\n\n- [context] Final recommendation did not reflect the 'nature/short hikes' preference.\n- [grounding] No explicit uncertainty phrasing observed in the entity-seeking response.\n- [latency] Flower unobservable in 'asr_wer'.\n- [latency] Flower unobservable in 'baseline'.\n- [latency] Flower unobservable in 'context'.\n- [latency] Flower unobservable in 'grounding'.\n- [latency] Flower unobservable in 'recovery'.\n- [latency] Flower unobservable in 'response_quality'.\n- [latency] Flower unobservable in 'robustness'.\n- [latency] Flower unobservable in 'topic_switch'.\n- [latency] Flower unobservable in 'turn_taking'.\n- [latency] Flower unobservable in 'uncertainty'.\n\n## Positive Behaviors\n\n- [turn_taking] Turn-end respected in 2 scenario(s); no early pre-empt observed.\n- [barge_in] Interrupt detected during playback and agent recovered.\n- [backchannel] Backchannel did not interrupt playback.\n- [asr] Low WER across corpus (11.8%).\n- [context] User turns were transcribed and the 'given everything' question was answered.\n\n## Repeated Failure Patterns\n\n- Chronic weakness in Error recovery (score 3.0).\n- Chronic weakness in Naturalness (score 4.0).\n- Chronic weakness in Backchannel handling (score 4.0).\n\n## Recommended Engineering Priorities\n\n1. Error recovery\n2. Naturalness\n3. Backchannel handling\n4. Dialogue flow / context switching\n5. Response latency\n6. Conversation state management\n7. ASR segmentation / WER\n8. Grounding & hallucination guard\n9. Barge-in reliability\n10. End-of-turn detection\n\n## Regression Tests\n\n| ID | Scenario | Utterance | Expected | Observed | Pass | Severity |\n|---|---|---|---|---|---|---|\n| **ASR-001** | asr_wer | _(LibriSpeech clip)_ | ASR transcript closely matches ground truth | WER 11.8% | \u2705 PASS | minor |\n| **BI-001** | barge_in | _Wait, no, that's not what I meant_ | Interrupt detected; TTS stops; new turn accepted | INTERRUPT fired | \u2705 PASS | major |\n| **BC-001** | backchannel | _yeah uh-huh right_ | Backchannel does NOT trigger interrupt | INTERRUPT none | \u2705 PASS | minor |\n| **CTX-001** | context | _given everything, what would you recommend?_ | Recommendation reflects five people, budget, nature | 5 referenced | \u2705 PASS | minor |\n| **HAL-001** | grounding | _restaurants near Hyderabad_ | Agent expresses uncertainty / does not fabricate | unsupported entities none; uncertainty=False | \u2705 PASS | minor |\n| **REC-001** | recovery | _no, that's not what I meant, I wanted a restaurant_ | Agent acknowledges and re-interprets, continues naturally | transcript + response captured | \u2705 PASS | minor |\n"
+}

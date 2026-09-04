@@ -1,0 +1,16 @@
+{
+  "id": "recovery",
+  "name": "Error Recovery After Misunderstanding",
+  "category": "recovery",
+  "corpus": "",
+  "meta": {"regression_id": "REC-001", "metrics": ["error_recovery"]},
+  "steps": [
+    {"kind": "speak", "text": "I need to book a hotel for two nights in Pune", "pause_after_ms": 800},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 12000},
+    {"kind": "drain", "timeout_ms": 6000},
+
+    {"kind": "speak", "text": "No, that's not what I meant, I wanted a restaurant recommendation instead", "pause_after_ms": 900},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 12000},
+    {"kind": "drain", "timeout_ms": 15000}
+  ]
+}

@@ -83,6 +83,7 @@ _RULES: list[tuple[str, re.Pattern[str], _ValueFn]] = [
     ("preference", re.compile(r"\bmy favourite? food is\s+([a-z]+(?: [a-z]+)?)", re.IGNORECASE), _kv("favorite_food")),
     ("preference", re.compile(r"\b(?:my hobby is|i love to)\s+([a-z]+(?: [a-z]+)?)", re.IGNORECASE), _kv("hobby")),
     ("personal", re.compile(r"\b(?:i own|i bought)\s+(?:a|an|my)\s+(house|car|apartment|bike|motorcycle)\b", re.IGNORECASE), _owns),
+    ("trip", re.compile(r"\b(?:(?:for|of|with)\s+)?(?:we are|we'?re|group of|party of|the\s+)?(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,3})\s+people\b", re.IGNORECASE), _kv("group_size")),
 ]
 
 
