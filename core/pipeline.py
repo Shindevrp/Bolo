@@ -15,13 +15,15 @@ from modules.emotion.classifier import EmotionClassifier
 from providers.stt.base import STTProvider
 from providers.llm.base import LLMProvider
 from providers.tts.base import TTSProvider
-from modules.vad.silero_vad import SileroVAD
+from modules.vad.silero_vad import HysteresisVAD, SileroVAD
 from modules.turn.detector import TurnDetector
 from modules.turn.interrupt import InterruptHandler
 from modules.turn.timing import TurnTiming
 from modules.turn.topic import TopicTracker
 from modules.turn.intent import IntentClassifier
 from modules.turn.backchannel import TurnBackchannel
+from modules.turn.entity import EntityGate
+from modules.turn.backchannel_interrupt import BackchannelInterrupt
 from modules.backchannel.generator import BackchannelGenerator
 from modules.backchannel.timing import BackchannelTiming
 from modules.memory.session import SessionMemory
@@ -73,6 +75,7 @@ class PipelineEvent(Enum):
     PROSODY = auto()
     INTERRUPT = auto()
     RESPONSE_DELAY = auto()
+    ENTITY_GUARD = auto()
     ERROR = auto()
 
 
@@ -119,11 +122,31 @@ class StreamingPipeline:
         backchannel_generator: BackchannelGenerator | None = None,
         backchannel_timing: BackchannelTiming | None = None,
         emotion_classifier: EmotionClassifier | None = None,
+        *,
+        use_hysteresis_vad: bool = True,
+        endpoint_short_ms: int = 350,
+        endpoint_normal_ms: int = 450,
+        endpoint_hesitation_ms: int = 550,
+        endpoint_safety_cap_ms: int = 900,
+        endpoint_short_utterance_ms: int = 1500,
+        min_speech_duration_ms: int = 500,
     ) -> None:
         self.stt = stt
         self.llm = llm
         self.tts = tts
+        if (
+            use_hysteresis_vad
+            and not isinstance(vad, HysteresisVAD)
+            and isinstance(vad, SileroVAD)
+        ):
+            vad = HysteresisVAD(vad, sample_rate=getattr(vad, "sample_rate", 16000))
         self.vad = vad
+        self.endpoint_short_ms = endpoint_short_ms
+        self.endpoint_normal_ms = endpoint_normal_ms
+        self.endpoint_hesitation_ms = endpoint_hesitation_ms
+        self.endpoint_safety_cap_ms = endpoint_safety_cap_ms
+        self.endpoint_short_utterance_ms = endpoint_short_utterance_ms
+        self.min_speech_duration_ms = min_speech_duration_ms
         self.turn_detector = turn_detector or TurnDetector()
         self.interrupt_handler = interrupt_handler or InterruptHandler()
         self.turn_timing = turn_timing or TurnTiming()
@@ -164,7 +187,10 @@ class StreamingPipeline:
         self._speech_buffers: dict[str, bytearray] = {}
         self._frame_buffers: dict[str, bytearray] = {}
         self._silence_ms: dict[str, float] = {}
+        self._speech_ms: dict[str, float] = {}
         self._last_partial_time: dict[str, float] = {}
+        self._last_refresh_ms: dict[str, float] = {}
+        self._partial_inflight: dict[str, bool] = {}
         self._barge_pending: dict[str, bool] = {}
         self._barge_thresholds: dict[str, float] = {}
         self._barge_frames: dict[str, int] = {}
@@ -253,6 +279,7 @@ class StreamingPipeline:
         self._speaking.clear()
         self._speech_buffers.clear()
         self._silence_ms.clear()
+        self._speech_ms.clear()
         self._last_partial_time.clear()
         self._barge_pending.clear()
         self._barge_thresholds.clear()
@@ -323,7 +350,10 @@ class StreamingPipeline:
         self._speech_buffers.pop(session_id, None)
         self._frame_buffers.pop(session_id, None)
         self._silence_ms.pop(session_id, None)
+        self._speech_ms.pop(session_id, None)
         self._last_partial_time.pop(session_id, None)
+        self._last_refresh_ms.pop(session_id, None)
+        self._partial_inflight.pop(session_id, None)
         self._barge_pending.pop(session_id, None)
         self._barge_thresholds.pop(session_id, None)
         self._barge_frames.pop(session_id, None)
@@ -337,16 +367,25 @@ class StreamingPipeline:
         ev = self._int_event(session_id)
         ev.set()
         self._bump_generation(session_id)
+
+        # Cancel the in-flight generation (LLM stream + its children). We do
+        # NOT await it here: it must unwind in the background so that the
+        # pipeline loop can return to listening immediately and capture the
+        # interruption utterance without stalling.
         task = self._current_tasks.get(session_id)
         if task and not task.done():
             task.cancel()
+
+        # Cancel the TTS worker and let it unwind in the background. Awaiting
+        # it would block the pipeline loop for as long as Piper takes to abort
+        # the current (CPU-bound, off-thread) synthesis chunk, which would
+        # freeze barge-in detection and the capture of the new user speech.
         tts_worker = self._tts_workers.get(session_id)
         if tts_worker and not tts_worker.done():
             tts_worker.cancel()
-            try:
-                await tts_worker
-            except (asyncio.CancelledError, Exception):
-                pass
+            self._reap_tts_worker(tts_worker)
+
+        # Clear playback bookkeeping synchronously (plain dict work, no IO).
         self._playback_active[session_id] = False
         self._playback_onset.pop(session_id, None)
         self._echo_floor.pop(session_id, None)
@@ -354,6 +393,18 @@ class StreamingPipeline:
         if clear_task and not clear_task.done():
             clear_task.cancel()
         logger.info(f"interrupt signaled for session {session_id}")
+
+    def _reap_tts_worker(self, worker: asyncio.Task) -> None:
+        """Await a cancelled TTS worker in the background so it can't block
+        the pipeline loop, while still collecting its (cancelled) exception."""
+
+        async def _reap() -> None:
+            try:
+                await worker
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        asyncio.create_task(_reap())
 
     async def output_stream(self) -> AsyncGenerator[PipelineMessage, None]:
         """Legacy global output stream (used by the CLI)."""
@@ -610,15 +661,26 @@ class StreamingPipeline:
                     self._speaking[sid] = True
                     ctx.dialogue_state = DialogueState.LISTENING
                     self._silence_ms[sid] = 0.0
+                    self._speech_ms[sid] = len(chunk) / (
+                        self.vad.sample_rate * 2 / 1000
+                    )
                     self._low_energy_frames[sid] = 0
                     self._speech_buffers[sid] = bytearray(chunk)
                     speech_buffer = self._speech_buffers[sid]
                     self._last_partial_time[sid] = time.time()
+                    # Discard the previous utterance's partial transcript so
+                    # turn-end detection and speculative LLM for this new
+                    # utterance never reuse stale text from the prior turn.
+                    ctx.last_partial_transcript = ""
                     self.turn_detector.reset()
                     self.vad.reset()
                     await self._emit(PipelineEvent.SPEECH_START, session_id=sid)
                 else:
                     self._silence_ms[sid] = 0.0
+                    self._speech_ms[sid] = (
+                        self._speech_ms.get(sid, 0.0)
+                        + len(chunk) / (self.vad.sample_rate * 2 / 1000)
+                    )
                     speech_buffer.extend(chunk)
                     energy = rms_energy(bytes(chunk)) / 32768.0
                     playback_on = self._playback_active.get(sid, False)
@@ -680,8 +742,10 @@ class StreamingPipeline:
                 if (
                     now - self._last_partial_time.get(sid, 0.0)
                     >= partial_transcript_interval
+                    and not self._partial_inflight.get(sid, False)
                 ):
                     self._last_partial_time[sid] = now
+                    self._partial_inflight[sid] = True
                     partial_blob = bytes(speech_buffer)
                     asyncio.create_task(
                         self._partial_transcribe(partial_blob, sid, ctx)
@@ -711,31 +775,76 @@ class StreamingPipeline:
                     turn_decision = self.turn_detector.process_chunk(chunk, False)
 
                     semantic_score = 0.0
+                    incomplete = False
                     if ctx.last_partial_transcript:
-                        semantic_score = self.turn_detector.classifier._score_linguistic(
+                        classifier = self.turn_detector.classifier
+                        semantic_score = classifier._score_linguistic(
+                            ctx.last_partial_transcript
+                        )
+                        incomplete = classifier.is_incomplete(
                             ctx.last_partial_transcript
                         )
 
-                    adaptive_threshold = 250.0
-                    if semantic_score >= 0.8:
-                        adaptive_threshold = 80.0
-                    elif semantic_score >= 0.6:
-                        adaptive_threshold = 120.0
-                    elif semantic_score <= 0.2 and len(ctx.last_partial_transcript.split()) > 2:
-                        adaptive_threshold = 300.0
-                    elif turn_decision == "end_turn_force":
-                        adaptive_threshold = 100.0
-                    elif turn_decision == "end_turn":
-                        adaptive_threshold = 180.0
-                    elif ctx.engagement > 0.7:
-                        adaptive_threshold = 200.0
+                    # The user has finished a list/enumeration which we suspect
+                    # is incomplete, OR the accumulated speech is very short.
+                    # Refresh the partial before we commit to ending the turn so
+                    # we don't cut off e.g. "Is it color, function," mid-stream.
+                    if (
+                        silence_ms >= 180.0
+                        and incomplete
+                        and len(speech_buffer) > 0
+                        and silence_ms - self._last_refresh_ms.get(sid, 0.0) >= 150.0
+                    ):
+                        self._last_refresh_ms[sid] = silence_ms
+                        fresh = await self._partial_transcribe(
+                            bytes(speech_buffer), sid, ctx, sync=True
+                        )
+                        if fresh is not None:
+                            semantic_score = self.turn_detector.classifier._score_linguistic(
+                                fresh
+                            )
+                            incomplete = self.turn_detector.classifier.is_incomplete(
+                                fresh
+                            )
 
-                    if silence_ms >= adaptive_threshold:
+                    # Evidence-based adaptive endpointing. The commit decision
+                    # is gated on BOTH a minimum speech duration (so a blip or
+                    # very short sound is never cut off) AND an adaptive silence
+                    # threshold that reflects how complete the utterance sounds.
+                    speech_dur_ms = self._speech_ms.get(sid, 0.0)
+                    trajectory = self.turn_detector.prosody_analyzer.analyze().get(
+                        "trajectory", "neutral"
+                    )
+
+                    endpoint_ms = self.endpoint_normal_ms
+                    if incomplete or trajectory == "rising":
+                        # Speaker is mid-flow / building toward more; give them
+                        # room to finish the thought or enumeration.
+                        endpoint_ms = self.endpoint_hesitation_ms
+                    elif (
+                        turn_decision == "end_turn_force"
+                        and semantic_score >= 0.8
+                        and speech_dur_ms <= self.endpoint_short_utterance_ms
+                        and trajectory == "falling"
+                    ):
+                        # Clearly completed short utterance - respond briskly.
+                        endpoint_ms = self.endpoint_short_ms
+
+                    # Safety cap: never wait longer than this so long pauses
+                    # don't feel sluggish.
+                    endpoint_ms = min(endpoint_ms, self.endpoint_safety_cap_ms)
+
+                    speech_long_enough = (
+                        speech_dur_ms >= self.min_speech_duration_ms
+                    )
+
+                    if speech_long_enough and silence_ms >= endpoint_ms:
                         self._speaking[sid] = False
                         self._barge_pending[sid] = False
                         self._barge_thresholds.pop(sid, None)
                         self._barge_frames.pop(sid, None)
                         self._interrupt_handler(sid).reset()
+                        self._last_refresh_ms.pop(sid, None)
                         audio_blob = bytes(speech_buffer)
                         self._speech_buffers[sid] = bytearray()
                         self.vad.reset()
@@ -775,11 +884,47 @@ class StreamingPipeline:
         overlap = len(set(words) & last_words) / len(words)
         return overlap >= 0.6
 
+    @staticmethod
+    def _looks_like_noise(transcript: str) -> bool:
+        """True when the transcript contains no letter-bearing word (pure
+        punctuation/symbols/digit-only tokens), i.e. STT fired on noise rather
+        than real speech and we should not respond to it."""
+        if not transcript:
+            return True
+        words = [w for w in transcript.split() if any(ch.isalpha() for ch in w)]
+        return not words
+
     async def _maybe_fire_barge(
         self, sid: str, ctx: ConversationContext, energy: float
     ) -> None:
         if not self._barge_pending.get(sid, False):
             return
+
+        # Lexical gate: if a partial transcript is already available, decide
+        # from its content whether this speech is a genuine interruption.
+        partial = (ctx.last_partial_transcript or "").strip()
+        if partial:
+            lexical = BackchannelInterrupt.classify(partial)
+            if lexical == "backchannel":
+                # Conversational feedback ("yeah", "uh-huh", "right", "okay")
+                # should NOT cancel our response. Keep the response going.
+                self._barge_pending[sid] = False
+                self._barge_thresholds.pop(sid, None)
+                self._barge_frames.pop(sid, None)
+                self._interrupt_handler(sid).reset()
+                return
+            if lexical == "disagreement":
+                # Firm interruption ("no", "stop", "wait", "that's wrong"):
+                # cancel immediately regardless of accumulated speech frames.
+                self._barge_pending[sid] = False
+                self._barge_thresholds.pop(sid, None)
+                self._barge_frames.pop(sid, None)
+                self._interrupt_handler(sid).reset()
+                await self.signal_interrupt(sid)
+                ctx.dialogue_state = DialogueState.LISTENING
+                await self._emit(PipelineEvent.INTERRUPT, session_id=sid)
+                return
+
         handler = self._interrupt_handler(sid)
         threshold = self._barge_thresholds.get(
             sid, self.interrupt_handler.speech_energy_threshold
@@ -840,6 +985,7 @@ class StreamingPipeline:
                     partial, ctx, memory, retrieval,
                     facts=self._facts.get(session_id),
                     session_id=session_id,
+                    user_repeated=ctx.user_repeated,
                 )
 
                 async def _spec_llm():
@@ -864,6 +1010,15 @@ class StreamingPipeline:
             if self._looks_like_echo(session_id, transcript):
                 logger.debug(
                     f"dropped echo-looking transcript session={session_id}"
+                    f" transcript={transcript!r}"
+                )
+                if spec_task:
+                    spec_task.cancel()
+                return
+
+            if self._looks_like_noise(transcript):
+                logger.debug(
+                    f"dropped noise-looking transcript session={session_id}"
                     f" transcript={transcript!r}"
                 )
                 if spec_task:
@@ -933,6 +1088,7 @@ class StreamingPipeline:
                     transcript, ctx, memory, retrieval,
                     facts=self._facts.get(session_id),
                     session_id=session_id,
+                    user_repeated=ctx.user_repeated,
                 )
 
             if memory:
@@ -1032,6 +1188,12 @@ class StreamingPipeline:
 
             full = ""
 
+            # Entities the model is legitimately allowed to reference this
+            # turn: what the user said, plus anything returned by a tool.
+            supported_entities: set[str] = set(
+                EntityGate.extract_entities(transcript)
+            )
+
             if used_speculation:
                 full = spec_full or ""
                 ctx.dialogue_state = DialogueState.INTERRUPTIBLE
@@ -1127,6 +1289,10 @@ class StreamingPipeline:
                             "role": "tool",
                             "content": f"{tr['tool']} result: {tr['result']}",
                         })
+                        if not tr.get("failed"):
+                            supported_entities.update(
+                                EntityGate.extract_entities(str(tr["result"]))
+                            )
                     if any(tr.get("failed") for tr in tool_results):
                         followup_messages.append({
                             "role": "user",
@@ -1201,6 +1367,32 @@ class StreamingPipeline:
 
             if tts_worker:
                 await tts_worker
+
+            # Layer-2 entity guard: if this was an entity-seeking query and the
+            # final answer asserted a specific place/business name that was not
+            # provided by the user, a tool result, or retrieval, treat it as a
+            # possible hallucination. Speak an honest correction, surface an
+            # ENTITY_GUARD event, and keep the fabrication out of memory so it
+            # can't later be re-injected as authoritative.
+            fabricated = self._verify_entity_assertions(
+                transcript, full, supported_entities
+            )
+            if fabricated:
+                safe = EntityGate.safety_response(fabricated)
+                logger.warning(
+                    f"entity guard blocked fabricated names session={session_id}"
+                    f" names={fabricated}"
+                )
+                await self._emit(
+                    PipelineEvent.ENTITY_GUARD, "\n".join(fabricated), session_id
+                )
+                if not int_ev.is_set():
+                    for c in chunker.feed(safe):
+                        await push(1, self._tool_registry.strip_calls(c))
+                    tail = chunker.flush()
+                    if tail:
+                        await push(1, self._tool_registry.strip_calls(tail))
+                full = safe
 
             if memory:
                 memory.add("assistant", full)
@@ -1279,6 +1471,11 @@ class StreamingPipeline:
         total_bytes = 0
         first_emit: float | None = None
         spoken: list[str] = []
+        # Set whenever this worker bails due to an interrupt / stop. The
+        # session's int_ev can be re-cleared by a later turn before this
+        # finally runs, so we track interruption locally to avoid spurious
+        # side effects (playback-clear / last_spoken) from stale workers.
+        interrupted = False
 
         async def _one(text: str) -> AsyncGenerator[str, None]:
             yield text
@@ -1291,6 +1488,7 @@ class StreamingPipeline:
                     )
                 except asyncio.TimeoutError:
                     if int_ev.is_set() or stop_tts.is_set():
+                        interrupted = True
                         await self._drain_queue(text_queue)
                         break
                     continue
@@ -1298,6 +1496,7 @@ class StreamingPipeline:
                 if text is None:
                     break
                 if int_ev.is_set() or stop_tts.is_set():
+                    interrupted = True
                     await self._drain_queue(text_queue)
                     break
                 spoken.append(text)
@@ -1307,6 +1506,7 @@ class StreamingPipeline:
                         _one(text), prosody=prosody
                     ):
                         if int_ev.is_set() or stop_tts.is_set():
+                            interrupted = True
                             break
                         if isinstance(audio_chunk, bytes) and len(audio_chunk) > 0:
                             if first_emit is None:
@@ -1339,14 +1539,14 @@ class StreamingPipeline:
         finally:
             if (
                 total_bytes > 0
-                and not int_ev.is_set()
+                and not interrupted
                 and first_emit is not None
             ):
                 self._schedule_playback_clear(
                     session_id,
                     first_emit + total_bytes / (sr * 2) - time.monotonic(),
                 )
-            if not int_ev.is_set() and spoken:
+            if not interrupted and spoken:
                 self._last_spoken[session_id] = " ".join(spoken)
 
     def _schedule_playback_clear(self, session_id: str, delay: float) -> None:
@@ -1368,12 +1568,26 @@ class StreamingPipeline:
         self._playback_clear_tasks[session_id] = asyncio.create_task(_clear())
 
     async def _partial_transcribe(
-        self, audio_blob: bytes, session_id: str, ctx: ConversationContext
-    ) -> None:
-        text = await self.stt.transcribe(audio_blob)
-        if text and text != ctx.last_partial_transcript:
-            ctx.last_partial_transcript = text
-            await self._emit(PipelineEvent.PARTIAL_TRANSCRIPT, text, session_id)
+        self,
+        audio_blob: bytes,
+        session_id: str,
+        ctx: ConversationContext,
+        sync: bool = False,
+    ) -> str | None:
+        try:
+            text = await self.stt.transcribe(audio_blob)
+            if text and text != ctx.last_partial_transcript:
+                ctx.last_partial_transcript = text
+                await self._emit(PipelineEvent.PARTIAL_TRANSCRIPT, text, session_id)
+                return text
+            if sync:
+                return text or None
+            return None
+        finally:
+            # Background partials set the in-flight guard; clear it so the
+            # next partial can be scheduled once the transcript is ready.
+            if not sync:
+                self._partial_inflight.pop(session_id, None)
 
     def _classify_query_complexity(self, text: str) -> str:
         text_lower = text.lower().strip()
@@ -1471,6 +1685,29 @@ class StreamingPipeline:
         except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
             pass
 
+    def _verify_entity_assertions(
+        self,
+        transcript: str,
+        final_text: str,
+        supported: set[str],
+    ) -> list[str]:
+        """Return fabricated (unsupported) entities asserted in `final_text`.
+
+        Runs only for entity-seeking queries. `supported` holds names that came
+        from tool results, retrieval, or the user's own words — anything else
+        that looks like a specific place/business name is treated as a possible
+        hallucination so the pipeline can refuse to let it stand.
+        """
+        if not EntityGate.query_needs_verification(transcript):
+            return []
+        return EntityGate.unsupported_entities(
+            final_text,
+            supported,
+            user_input_entities={
+                e for e in EntityGate.extract_entities(transcript)
+            },
+        )
+
     async def _build_messages(
         self,
         transcript: str,
@@ -1479,6 +1716,7 @@ class StreamingPipeline:
         retrieval: RetrievalModule | None,
         facts: FactMemory | None = None,
         session_id: str = "default",
+        user_repeated: bool = False,
     ) -> list[dict[str, str]]:
         has_context = False
         retrieved: list[tuple[str, str | None]] = []
@@ -1513,16 +1751,41 @@ class StreamingPipeline:
         if tool_block:
             system_prompt += tool_block
 
+        # Entity queries (specific place/business/entity) MUST be verified via
+        # a search_web round-trip before any concrete name is spoken. Without
+        # this hard upstream gate the model can fabricate plausible-looking
+        # restaurant/place names that then stream straight to TTS.
+        if EntityGate.query_needs_verification(transcript):
+            system_prompt += (
+                "\n\nENTITY VERIFICATION (mandatory):\n"
+                "The user is asking about a specific place, business, or named "
+                "entity. You MUST output exactly one tool call "
+                "{tool:search_web(query)} and wait for its result before naming "
+                "any specific place, restaurant, shop, or business.\n"
+                "  - NEVER name, recommend, or describe a specific place, "
+                "restaurant, shop, or business unless its name came from the "
+                "search_web result in this turn.\n"
+                "  - If you do not have a verified name, say you're not sure "
+                "and offer to look it up — never invent one.\n"
+                "  - Do not produce any other text before the tool call."
+            )
+
         if facts is not None:
             facts_block = facts.to_block()
             if facts_block:
-                system_prompt += "\n\n" + facts_block
+                system_prompt += (
+                    "\n\nKnown facts about the user "
+                    "(treat these as authoritative; do not contradict them):\n"
+                    + facts_block
+                )
 
         if ctx.topic and ctx.turn_count > 0:
             system_prompt += f"\n\nCurrent topic: {ctx.topic}."
         if memory and memory.summary:
             system_prompt += (
-                f"\n\nConversation summary so far:\n{memory.summary}"
+                "\n\nConversation summary so far (attributed to speakers, "
+                "'user' = the other participant, 'assistant' = you):\n"
+                + memory.summary
             )
         if ctx.intent == "correction":
             system_prompt += (
@@ -1534,6 +1797,21 @@ class StreamingPipeline:
             system_prompt += (
                 "\n\nThe user is continuing their previous thought. Respond "
                 "fluidly without re-introducing the topic."
+            )
+
+        if user_repeated:
+            system_prompt += (
+                "\n\nThe user is repeating or re-asking something they asked "
+                "before. Acknowledge that your previous answer didn't fully "
+                "land, then respond again with a fresh, clearer, or more "
+                "direct approach. Do not repeat your previous wording."
+            )
+
+        if ctx.topic and ctx.topic_shift and ctx.turn_count > 1:
+            system_prompt += (
+                f"\n\nThe user has switched to a new topic "
+                f"('{ctx.topic}'). Move on cleanly and don't keep referring "
+                "to the previous topic."
             )
 
         messages: list[dict[str, str]] = [

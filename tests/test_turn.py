@@ -51,6 +51,52 @@ class TestTurnClassifier:
         assert decision == "continue"
 
 
+class TestTurnClassifierIncompleteUtterances:
+    def test_enumeration_ending_comma_continues(self) -> None:
+        c = TurnClassifier()
+        assert c.is_incomplete("Is it color, function,")
+        feat = {"silence_duration": 0.3, "speech_duration": 2.0}
+        decision = c.classify(feat, partial_transcript="Is it color, function,")
+        assert decision == "continue"
+
+    def test_serial_comma_without_terminal_continues(self) -> None:
+        c = TurnClassifier()
+        assert c.is_incomplete("color, function, placement")
+
+    def test_open_list_marker_continues(self) -> None:
+        c = TurnClassifier()
+        assert c.is_incomplete("what do you think about or")
+        assert c.is_incomplete("maybe something like")
+
+    def test_completed_question_not_incomplete(self) -> None:
+        c = TurnClassifier()
+        assert not c.is_incomplete("what is the weather?")
+        assert not c.is_incomplete("is it color, function, placement, or something else?")
+
+    def test_completed_statement_not_incomplete(self) -> None:
+        c = TurnClassifier()
+        assert not c.is_incomplete("I think it's the red one.")
+        assert not c.is_incomplete("nothing")
+        assert not c.is_incomplete("")
+
+    def test_discourse_marker_comma_not_incomplete(self) -> None:
+        c = TurnClassifier()
+        assert not c.is_incomplete("well, I think so")
+        assert not c.is_incomplete("well, I think so.")
+
+    def test_question_word_incomplete_gets_low_score(self) -> None:
+        # "Is it color, function," starts like a question but is an open list,
+        # so it must NOT get the 0.9 question score that triggers the 80ms cut.
+        c = TurnClassifier()
+        assert c._score_linguistic("Is it color, function,") == 0.3
+
+    def test_completed_enumeration_question_gets_high_score(self) -> None:
+        c = TurnClassifier()
+        assert c._score_linguistic(
+            "Is it color, function, placement, or something else?"
+        ) == 0.9
+
+
 class TestInterruptHandler:
     def test_no_interrupt_when_not_speaking(self) -> None:
         h = InterruptHandler()

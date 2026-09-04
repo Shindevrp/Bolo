@@ -209,6 +209,24 @@ class TestSegmentCleanup:
         asyncio.run(run())
 
 
+class TestNoiseTranscriptGuard:
+    def test_pure_punctuation_is_noise(self) -> None:
+        assert StreamingPipeline._looks_like_noise("...")
+        assert StreamingPipeline._looks_like_noise("?!!!")
+
+    def test_digits_only_is_noise(self) -> None:
+        assert StreamingPipeline._looks_like_noise("123 456")
+
+    def test_empty_is_noise(self) -> None:
+        assert StreamingPipeline._looks_like_noise("")
+        assert StreamingPipeline._looks_like_noise("   ")
+
+    def test_real_speech_is_not_noise(self) -> None:
+        assert not StreamingPipeline._looks_like_noise("what time is it?")
+        assert not StreamingPipeline._looks_like_noise("stop")
+        assert not StreamingPipeline._looks_like_noise("um, maybe the red one")
+
+
 class TestBackgroundTopicLabeling:
     def test_labels_current_topic_in_background(self) -> None:
         async def run() -> str | None:
@@ -300,6 +318,49 @@ class TestMultiSessionIsolation:
             p = _make_pipeline()
             await p.signal_interrupt("unknown_session")
             assert "unknown_session" not in p._current_tasks
+
+        asyncio.run(run())
+
+    def test_signal_interrupt_does_not_wait_on_slow_tts_worker(self) -> None:
+        """signal_interrupt must return promptly so the pipeline loop can keep
+        capturing the interruption utterance, even if the TTS worker is slow to
+        abort its current synthesis."""
+        async def run() -> None:
+            p = _make_pipeline()
+            release = asyncio.Event()
+            started = asyncio.Event()
+
+            async def slow_tts(text_queue):
+                started.set()
+                # Simulate a TTS worker that is slow to unwind: it won't react
+                # to cancellation until `release` is set.
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    await asyncio.sleep(0.001)
+                    raise
+
+            p.tts = FakeTTS()
+            q: asyncio.PriorityQueue = asyncio.PriorityQueue()
+            seq = itertools.count()
+            q.put_nowait((1, next(seq), "hello", None))
+            tts_worker = asyncio.create_task(slow_tts(q))
+            p._tts_workers["sess"] = tts_worker
+
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+
+            # signal_interrupt must return well before the slow worker unwinds.
+            t0 = time.monotonic()
+            await asyncio.wait_for(p.signal_interrupt("sess"), timeout=0.1)
+            elapsed = time.monotonic() - t0
+            assert elapsed < 0.1
+
+            # Clean up so the helper reaper can finish.
+            release.set()
+            try:
+                await tts_worker
+            except (asyncio.CancelledError, Exception):
+                pass
 
         asyncio.run(run())
 
@@ -866,7 +927,7 @@ class TestLowEnergySilenceBackstop:
             col_task = asyncio.create_task(collect())
             for _ in range(4):
                 await p.push_audio(_const_energy_chunk(32639), "sess")
-            for _ in range(4):
+            for _ in range(8):
                 await p.push_audio(b"\x00" * FRAME_BYTES, "sess")
             await asyncio.sleep(0.3)
             p._running = False
@@ -902,5 +963,53 @@ class TestLowEnergySilenceBackstop:
             assert (PipelineEvent.SPEECH_START, "sess") in seen
             assert (PipelineEvent.SPEECH_END, "sess") not in seen
             assert p._speaking.get("sess") is True
+
+        asyncio.run(run())
+
+
+class TestRepetitionAndTopicGuidance:
+    def test_user_repeated_injects_guidance(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            ctx = p._ctx("sess")
+            readable = "".join(
+                m.get("content", "") for m in await p._build_messages(
+                    "what time is it?", ctx, None, None, user_repeated=True
+                )
+                if m.get("role") == "system"
+            )
+            assert "repeating or re-asking" in readable
+
+        asyncio.run(run())
+
+    def test_topic_shift_injects_guidance(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            ctx = p._ctx("sess")
+            ctx.topic = "cooking"
+            ctx.topic_shift = True
+            ctx.turn_count = 3
+            readable = "".join(
+                m.get("content", "") for m in await p._build_messages(
+                    "how do I make pasta?", ctx, None, None
+                )
+                if m.get("role") == "system"
+            )
+            assert "switched to a new topic" in readable
+
+        asyncio.run(run())
+
+    def test_no_guidance_when_not_repeated_and_no_shift(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            ctx = p._ctx("sess")
+            readable = "".join(
+                m.get("content", "") for m in await p._build_messages(
+                    "what time is it?", ctx, None, None
+                )
+                if m.get("role") == "system"
+            )
+            assert "repeating or re-asking" not in readable
+            assert "switched to a new topic" not in readable
 
         asyncio.run(run())

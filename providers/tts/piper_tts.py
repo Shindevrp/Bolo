@@ -239,6 +239,15 @@ class PiperTTS(TTSProvider):
             )
             for audio_chunk in pieces:
                 yield audio_chunk
+            # A chunk that ends without sentence punctuation (e.g. a clause or
+            # hard-char split from the chunker) would otherwise run directly
+            # into the next chunk with zero silence. Insert a short natural
+            # pause so consecutive fragments don't run together.
+            tail = buffer.strip().rstrip("\"'”’)]")
+            if tail and tail[-1] not in ".!?…":
+                pad = self._pause_after(",", prosody)
+                if pad:
+                    yield pad
 
     async def synthesize(
         self, text: str, prosody: ProsodyProfile | None = None

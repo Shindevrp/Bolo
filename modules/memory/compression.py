@@ -8,7 +8,11 @@ _SYSTEM_PROMPT = (
     "and a batch of new message transcripts, rewrite the summary to "
     "incorporate the new messages. Keep it under 100 words. Preserve the "
     "user's preferences, names, numbers, key facts, and any decisions. "
-    "Write concise prose; do not include speaker labels or quotes."
+    "Write concise prose. IMPORTANT: keep who-said-what clear by "
+    "attributing each point to the speaker (e.g. 'user wants X', "
+    "'assistant offered Y', 'user asked about Z'). Never merge the two "
+    "speakers into a single voice or let the assistant's words sound like "
+    "the user's."
 )
 
 

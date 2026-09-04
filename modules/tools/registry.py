@@ -57,6 +57,9 @@ class ToolRegistry:
         lines += [
             "",
             "RULES:",
+            "- NEVER name, recommend, or describe a specific place, restaurant, "
+            "shop, or business that did not come from a search_web result. "
+            "Fabricating a plausible-sounding name is prohibited.",
             "- NEVER say 'let me check', 'let me look that up', or 'I'll search' — "
             "just output the tool call and wait for the result.",
             "- NEVER invent or improvise data when a tool result is missing.",
