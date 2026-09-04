@@ -16,6 +16,82 @@ from pathlib import Path
 from bench.driver.scenario import load_scenarios
 
 
+def cmd_endpoint(args) -> int:
+    """Run the benchmark, persist raw event timelines, and report
+    endpointing/barge-in diagnostics computed from the captured events."""
+    from bench.harness import run_benchmark
+    from bench.scoring.endpoint import EndpointSample, analyze_results, render_metrics
+
+    run_benchmark(
+        agent_kind=args.agent,
+        base_url=args.base_url,
+        scenarios=args.scenarios or "all",
+        corpus_limits={} if args.limit is None else {"all": args.limit},
+        n_repeats=args.repeats,
+        judge_url=args.judge_llm_url,
+        judge_model=args.judge_model,
+        timeout=args.timeout,
+        out_path=args.out,
+        events_out=args.events,
+        label=args.label,
+    )
+    metrics = analyze_results(_load_results(args.events), _spoken_ground_truth(args.scenarios or "all"))
+    print(render_metrics(metrics))
+    return 0
+
+
+def _spoken_ground_truth(scenarios_spec: str) -> dict:
+    """Extract the scripted user-utterance reference texts from scenario speak
+    steps, keyed by scenario id, so Completion Capture can score against the
+    intended text rather than a transcript-produced proxy."""
+    from bench.driver.scenario import load_scenarios
+
+    sc_map = load_scenarios(scenarios_spec)
+    out: dict = {}
+    offset = 0.0
+    for sc in sc_map.values():
+        refs = []
+        for step in sc.steps:
+            if step.kind in ("speak", "corpus") and step.text:
+                refs.append((step.text, offset))
+                offset += 0.1
+        out[sc.id] = refs
+    return out
+
+
+def _load_results(events_path: str) -> "list":
+    """Reconstruct lightweight ScenarioResult-like objects from a dumped event
+    timeline so the deterministic endpoint metrics can be recomputed offline.
+    Real event timestamps (t) are preserved as mtime for latency analysis."""
+    import json
+    from pathlib import Path
+
+    from bench.agent.base import Event, EventType
+    from bench.driver.runner import ScenarioResult, Timeline
+    from bench.driver.scenario import load_scenarios
+
+    scenarios = load_scenarios()
+    data = json.loads(Path(events_path).read_text())
+    out = []
+    for item in data:
+        tl = Timeline()
+        for e in item["events"]:
+            try:
+                et = EventType[e["type"]]
+            except KeyError:
+                continue
+            tl.add(Event.make(et, text=e.get("text"), mtime=float(e.get("t", 0.0))))
+        sc = scenarios.get(item["scenario"])
+        if sc is None:
+            from bench.driver.scenario import Scenario
+            sc = Scenario(id=item["scenario"], name=item["name"], category="")
+        res = ScenarioResult(scenario=sc)
+        res.timeline = tl
+        res.error = item.get("error") or ""
+        out.append(res)
+    return out
+
+
 def cmd_list(_args) -> int:
     scs = load_scenarios("all")
     for sc_id, sc in sorted(scs.items()):
@@ -92,6 +168,19 @@ def main(argv=None) -> int:
     p_run.add_argument("--out", default=None, help="write report JSON+markdown")
     p_run.add_argument("--label", default="TASA")
 
+    p_end = sub.add_parser("endpoint", help="Run benchmark and report endpointing/barge-in diagnostics")
+    p_end.add_argument("--agent", default="tasa-ws")
+    p_end.add_argument("--base-url", default="ws://localhost:8000/ws/audio")
+    p_end.add_argument("--scenarios", default="all")
+    p_end.add_argument("--repeats", type=int, default=1)
+    p_end.add_argument("--limit", type=int, default=10)
+    p_end.add_argument("--judge-llm-url", default=None)
+    p_end.add_argument("--judge-model", default="qwen2.5:3b")
+    p_end.add_argument("--timeout", type=float, default=120.0)
+    p_end.add_argument("--out", default=None, help="write report JSON+markdown")
+    p_end.add_argument("--events", default="bench/events/latest.json", help="write raw event timelines JSON")
+    p_end.add_argument("--label", default="TASA")
+
     p_cmp = sub.add_parser("compare", help="Compare two benchmark reports")
     p_cmp.add_argument("--a", required=True)
     p_cmp.add_argument("--b", required=True)
@@ -101,6 +190,8 @@ def main(argv=None) -> int:
         return cmd_list(args)
     if args.command == "run":
         return cmd_run(args)
+    if args.command == "endpoint":
+        return cmd_endpoint(args)
     if args.command == "compare":
         return cmd_compare(args)
     parser.print_help()

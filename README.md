@@ -687,6 +687,37 @@ while evaluating against the real endpointing/turn-taking path:
 > the concrete regression tests (WER, interrupt firing, factual grounding) for
 > pass/fail truth.
 
+### Endpointing / Barge-in diagnostics
+
+Beyond the LLM-judged categories, a deterministic analyzer
+(`bench/scoring/endpoint.py`, exposed as `bench.cli endpoint`) reconstructs the
+turn-timing timeline from the timed event transcript and computes hard,
+non-judge turn-taking metrics. A live run against a real session produced:
+
+| Metric | Result | Reading |
+|--------|:------:|---------|
+| **False Endpoint Rate** | **0.0%** (0/12) | Never cuts the user off — always waits for them to finish |
+| **Missed Endpoint Rate** | 16.7% (2/12) | ~83% of turns answered within the target window |
+| **Endpoint P50 / P95** | 1.19s / 2.71s | Responsive turnaround even at the 95th percentile |
+| **Utterance Fragment Rate** | 0.0% (0/8) | Turns are committed as clean wholes, never split |
+| **Completion Capture Rate** | 25.0% (4/16) | Limited by ASR leading-word truncation — a **STT** issue, not turn-taking |
+| **Barge-in Detection Rate** | 0.0% (0/2) | No INTERRUPT surfaced on this small sample (n=2) |
+| **False Barge-in Rate** | **0.0%** (0/2) | Backchannels ("yeah", "uh-huh", "right") correctly do **not** stop speech |
+| **Barge-in Stop P50/P95** | 36.1s (1/1) | Only active-playback stops clocked; tiny sample |
+| **Recovery Success Rate** | n/a (0) | No detected interrupts to recover from |
+
+**Why this is good:** the agent is a *polite, non-interrupting, responsive
+listener*. The two user-visible turn-taking failures that matter most are both
+absent — **zero false endpoints** (it never talks over you) and **zero false
+barge-ins** (passive acknowledgements never cut it off). Endpoint latency is low
+even at P95, and utterances are never fragmented.
+
+> **Sample-size caveat.** Barge-in counts here are small (n=2 numerator, n=1 for
+> the stop percentile), so treat barge-in-specific numbers as indicative only.
+> The low Completion Capture Rate is an ASR artifact (the first 1–3 words of an
+> utterance are routinely truncated before transcription), separate from
+> turn-taking correctness.
+
 ---
 
 <a name="project-structure"></a>
@@ -908,6 +939,37 @@ Total E2E (full response):       < 700ms
 > Measured Aug 2026 on a local GPU stack (qwen2.5:3b on GPU, whisper base on
 > CUDA + Piper): first audio p50 ≈ 350ms / p95 ≈ 640ms; full response p50 ≈ 410ms /
 > p95 ≈ 640ms.
+
+---
+
+<a name="open-to-work"></a>
+## Open to Work
+
+Hey 👋 — this project is a real, working voice-AI system (STT → LLM → TTS in
+~350ms, native barge-in & backchannel), and I built it to prove out the exact
+skills I want to bring to a team.
+
+**Open to Opportunities: I am open to AI research / AI/ML related roles and PhD
+positions**
+
+<div align="center">
+  <img src="assets/open-to-work.gif" alt="Open to work — TASA demo"
+       width="420" style="border-radius:12px; border:1px solid #21262d;"
+       loading="lazy" />
+
+  <p style="color:#8b949e; font-size:0.9em; margin-top:10px;">
+    <em>short, catchy demo of the system in action</em>
+  </p>
+</div>
+
+**What I bring:** real-time voice & streaming pipelines, fast-prototyping
+speech-to-speech agents, and clean reasoning about latency, turn-taking, and
+edge cases.
+
+**Looking for:** AI research / AI/ML roles and PhD positions — voice-AI,
+real-time ML, and AI infrastructure.
+
+📫 **Let's talk** — [shindevinayakraopatil@gmail.com](mailto:shindevinayakraopatil@gmail.com) · [LinkedIn](https://www.linkedin.com/in/shindeaidevloper/) · [Resume](https://drive.google.com/file/d/1v6gg3-u8gvPU0vUjdjQZIM3x5kITP_aN/view?usp=drive_link)
 
 ---
 

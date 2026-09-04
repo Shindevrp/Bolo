@@ -76,6 +76,35 @@ def build_corpus(scenario_corpus_map: dict[str, str], limits: dict[str, int]) ->
     return out
 
 
+def dump_event_timelines(results: list[ScenarioResult], path: str | Path) -> Path:
+    """Persist the raw per-scenario event timelines to a JSON file so the
+    endpointing/barge-in diagnostics can be recomputed offline without
+    re-running the whole benchmark."""
+    out = []
+    for r in results:
+        out.append(
+            {
+                "scenario": r.scenario.id,
+                "name": r.scenario.name,
+                "ok": r.ok,
+                "error": r.error,
+                "events": [
+                    {
+                        "type": e.type.name,
+                        "text": e.text,
+                        "audio_bytes": len(e.audio) if e.audio is not None else None,
+                        "t": round(e.mtime, 3),
+                    }
+                    for e in r.timeline.events
+                ],
+            }
+        )
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(out, indent=2))
+    return p
+
+
 def make_transcript(results: list[ScenarioResult]) -> str:
     """Build a human-readable timed transcript for the judge LLM."""
     lines: list[str] = []
@@ -114,6 +143,7 @@ def run_benchmark(
     judge_model: str = "qwen2.5:3b",
     timeout: float = 120.0,
     out_path: str | None = None,
+    events_out: str | None = None,
     label: str = "TASA",
 ) -> Report:
     """High-level entry: connect, run, score, report."""
@@ -128,6 +158,7 @@ def run_benchmark(
             judge_model=judge_model,
             timeout=timeout,
             out_path=out_path,
+            events_out=events_out,
             label=label,
         )
     )
@@ -144,6 +175,7 @@ async def _run_benchmark_async(
     judge_model: str,
     timeout: float,
     out_path: str | None,
+    events_out: str | None,
     label: str,
 ) -> Report:
     sc_map = load_scenarios(scenarios)
@@ -233,6 +265,9 @@ async def _run_benchmark_async(
             data = rep.to_dict()
             data["markdown"] = rep.render_markdown()
             json.dump(data, f, indent=2)
+
+    if events_out:
+        dump_event_timelines(aggregations, events_out)
 
     return rep
 
