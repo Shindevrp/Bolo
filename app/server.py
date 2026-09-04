@@ -60,13 +60,14 @@ def _build_providers():
     from modules.backchannel.timing import BackchannelTiming
     from modules.emotion.classifier import EmotionClassifier
     stt = FasterWhisperSTT(
-        model_size=os.getenv("TASA_STT_MODEL", "tiny"),
+        model_size=os.getenv("TASA_STT_MODEL", "base"),
         device=_resolve_device("TASA_STT_DEVICE"),
         compute_type=os.getenv("TASA_STT_COMPUTE", "int8"),
     )
 
     llm = VLLMProvider(
         base_url=os.getenv("TASA_LLM_URL", "http://localhost:8000/v1"),
+        api_key=os.getenv("TASA_LLM_API_KEY", "EMPTY"),
         model=os.getenv("TASA_LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct-AWQ"),
     )
 
