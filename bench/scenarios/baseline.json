@@ -1,0 +1,13 @@
+{
+  "id": "baseline",
+  "name": "Baseline Greeting & Response",
+  "category": "baseline",
+  "corpus": "",
+  "meta": {"regression_id": "BASE-001", "metrics": ["latency", "response_length", "role_consistency"]},
+  "steps": [
+    {"kind": "speak", "text": "Hey, I wanted to talk to you about planning a short weekend trip. I haven't decided where to go yet.", "pause_after_ms": 800},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 10000},
+    {"kind": "expect", "event": "llm_token", "timeout_ms": 30000},
+    {"kind": "drain", "timeout_ms": 8000}
+  ]
+}

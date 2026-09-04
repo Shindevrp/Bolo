@@ -1,0 +1,20 @@
+{
+  "id": "topic_switch",
+  "name": "Topic Switching and Reset",
+  "category": "context",
+  "corpus": "",
+  "meta": {"regression_id": "CTX-002", "metrics": ["context", "topic_switch"]},
+  "steps": [
+    {"kind": "speak", "text": "Let's plan a trip to the mountains for my family", "pause_after_ms": 800},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 12000},
+    {"kind": "drain", "timeout_ms": 6000},
+
+    {"kind": "speak", "text": "Forget the trip for a moment, let's talk about artificial intelligence", "pause_after_ms": 800},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 12000},
+    {"kind": "drain", "timeout_ms": 6000},
+
+    {"kind": "speak", "text": "Okay, let's go back to the trip", "pause_after_ms": 800},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 12000},
+    {"kind": "drain", "timeout_ms": 15000}
+  ]
+}

@@ -939,6 +939,30 @@ class StreamingPipeline:
         if handler.should_interrupt(
             energy, 0.0, True, threshold=threshold, target_frames=target_frames
         ):
+            # Before committing to an interrupt during playback, classify the
+            # current speech. The periodic partial transcript is rate-limited
+            # (~1s), so short backchannels reach this point before any partial
+            # exists; probe the buffer directly so conversational feedback
+            # like "yeah", "uh-huh" or "right" doesn't cancel our response.
+            if self._playback_active.get(sid, False):
+                buf = self._speech_buffers.get(sid)
+                probe = ""
+                if buf:
+                    try:
+                        probe = (
+                            await self._partial_transcribe(
+                                bytes(buf), sid, ctx, sync=True
+                            )
+                            or ""
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"barge classify probe failed: {e}")
+                if probe and BackchannelInterrupt.is_backchannel(probe):
+                    self._barge_pending[sid] = False
+                    self._barge_thresholds.pop(sid, None)
+                    self._barge_frames.pop(sid, None)
+                    self._interrupt_handler(sid).reset()
+                    return
             self._barge_pending[sid] = False
             self._barge_thresholds.pop(sid, None)
             self._barge_frames.pop(sid, None)
@@ -950,6 +974,31 @@ class StreamingPipeline:
         self, audio_blob: bytes, session_id: str, ctx: ConversationContext
     ) -> None:
         prev = self._current_tasks.get(session_id)
+        # During playback, classify the incoming segment so conversational
+        # backchannels ("yeah", "uh-huh", "right") don't cancel the assistant's
+        # response mid-playback.
+        if (
+            prev is not None
+            and not prev.done()
+            and prev is not asyncio.current_task()
+            and self._playback_active.get(session_id, False)
+        ):
+            try:
+                classify_text = await self.stt.transcribe(audio_blob) or ""
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"backchannel classify failed: {e}")
+                classify_text = ""
+            if classify_text and BackchannelInterrupt.is_backchannel(classify_text):
+                # Passive feedback: keep the current response flowing, don't
+                # cancel playback or emit an interrupt.
+                self._barge_pending.pop(session_id, None)
+                self._barge_thresholds.pop(session_id, None)
+                self._barge_frames.pop(session_id, None)
+                self._interrupt_handler(session_id).reset()
+                logger.info(
+                    f"backchannel {session_id} ignored during playback: {classify_text}"
+                )
+                return
         if prev and not prev.done() and prev is not asyncio.current_task():
             prev.cancel()
             self._playback_active[session_id] = False

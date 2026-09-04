@@ -1,0 +1,22 @@
+{
+  "id": "turn_taking",
+  "name": "Turn-Taking / End-of-Turn Detection",
+  "category": "turn_taking",
+  "corpus": "",
+  "meta": {"regression_id": "TT-001", "metrics": ["turn_end", "latency"]},
+  "steps": [
+    {"kind": "speak", "text": "Hi.", "pause_after_ms": 700},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 10000, "detail": "short utterance transcribed"},
+    {"kind": "drain", "timeout_ms": 6000},
+
+    {"kind": "speak", "text": "Actually, I was thinking of the mountains, and we really enjoy nature", "silence_after_ms": 500},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 12000, "detail": "trailing-conjunction and pause held"},
+    {"kind": "drain", "timeout_ms": 6000},
+
+    {"kind": "speak", "text": "Uh, um, well actually I think maybe a camping spot, or a cabin,", "silence_after_ms": 600},
+    {"kind": "drain", "timeout_ms": 6000},
+
+    {"kind": "speak", "text": "Let's keep it a short drive from the city", "pause_after_ms": 600},
+    {"kind": "expect", "event": "transcript", "timeout_ms": 12000}
+  ]
+}
