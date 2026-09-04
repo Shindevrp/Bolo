@@ -66,7 +66,6 @@ services:
       - "8000:8000"
     volumes:
       - stt_cache:/root/.cache
-      - ./configs:/app/configs:ro
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
