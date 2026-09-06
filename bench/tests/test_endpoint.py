@@ -11,7 +11,9 @@ from bench.agent.base import Event, EventType
 from bench.driver.runner import ScenarioResult, Timeline
 from bench.driver.scenario import Scenario, Step
 from bench.scoring.endpoint import (
+    analyze_results,
     collect_endpoint_samples,
+    compute_eot_f1,
     compute_endpoint_metrics,
     reconstruct_user_turns,
 )
@@ -121,3 +123,83 @@ def test_reconstruct_preserves_timing():
     assert len(turns) == 1
     assert turns[0].speech_end == pytest_close(2.0)
     assert turns[0].response_after_end == pytest_close(3.0)
+
+
+def _eot_result(entries):
+    sc = Scenario(id="tt", name="T", category="turn_taking")
+    tl = Timeline()
+    for et, t, text in entries:
+        tl.add(_ev(et, t, text))
+    res = ScenarioResult(scenario=sc)
+    res.timeline = tl
+    return res
+
+
+def test_eot_f1_all_correct():
+    res = _eot_result([
+        (EventType.SPEECH_START, 1.0, None),
+        (EventType.SPEECH_END, 2.0, None),
+        (EventType.TTS_CHUNK, 2.5, None),   # within [2.0, 5.0]
+    ])
+    m = compute_eot_f1(collect_endpoint_samples([res]))
+    assert m["eot_true_positives"].value == 1.0
+    assert m["eot_false_positives"].value == 0.0
+    assert m["eot_false_negatives"].value == 0.0
+    assert m["eot_precision"].value == pytest_close(1.0)
+    assert m["eot_recall"].value == pytest_close(1.0)
+    assert m["eot_f1"].value == pytest_close(1.0)
+
+
+def test_eot_f1_cut_off_and_missed():
+    res = _eot_result([
+        (EventType.SPEECH_START, 1.0, None),
+        (EventType.LLM_TOKEN, 1.6, "cut"),  # before speech_end -> FP
+        (EventType.SPEECH_END, 2.0, None),
+        (EventType.SPEECH_START, 3.0, None),
+        (EventType.SPEECH_END, 4.0, None),
+        (EventType.TTS_CHUNK, 8.0, None),   # 4s late -> FN
+    ])
+    m = compute_eot_f1(collect_endpoint_samples([res]))
+    assert m["eot_true_positives"].value == 0.0
+    assert m["eot_false_positives"].value == 1.0
+    assert m["eot_false_negatives"].value == 1.0
+    assert m["eot_precision"].value == pytest_close(0.0)
+    assert m["eot_recall"].value == pytest_close(0.0)
+    # precision + recall == 0 -> F1 is mathematically undefined
+    assert m["eot_f1"].value is None
+
+
+def test_eot_f1_halves_on_one_wrong():
+    res = _eot_result([
+        (EventType.SPEECH_START, 1.0, None),
+        (EventType.SPEECH_END, 2.0, None),
+        (EventType.TTS_CHUNK, 2.5, None),   # TP
+        (EventType.SPEECH_START, 3.0, None),
+        (EventType.SPEECH_END, 4.0, None),  # no response -> FN
+    ])
+    m = compute_eot_f1(collect_endpoint_samples([res]))
+    assert m["eot_true_positives"].value == 1.0
+    assert m["eot_false_negatives"].value == 1.0
+    assert m["eot_precision"].value == pytest_close(1.0)   # no FPs
+    assert m["eot_recall"].value == pytest_close(0.5)
+    assert m["eot_f1"].value == pytest_close(2 / 3)
+
+
+def test_eot_f1_no_turns_undefined():
+    res = _eot_result([])
+    m = compute_eot_f1(collect_endpoint_samples([res]))
+    assert m["eot_precision"].value is None
+    assert m["eot_recall"].value is None
+    assert m["eot_f1"].value is None
+    assert m["eot_true_positives"].denominator == 0
+
+
+def test_analyze_results_includes_eot():
+    res = _eot_result([
+        (EventType.SPEECH_START, 1.0, None),
+        (EventType.SPEECH_END, 2.0, None),
+        (EventType.TTS_CHUNK, 2.5, None),
+    ])
+    m = analyze_results([res])
+    assert m["eot_f1"].value == pytest_close(1.0)
+    assert m["completion_capture_rate"] is not None

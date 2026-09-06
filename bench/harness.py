@@ -18,7 +18,7 @@ from bench.driver.scenario import load_scenarios
 from bench.scoring.aggregate import aggregate
 from bench.scoring.judge import score_timeline
 from bench.scoring.report import Report
-from bench.scoring.wer import wer_stats
+from bench.scoring.wer import cer_stats, wer_stats
 
 
 def _agent_factory(kind: str, base_url: str) -> SpeechAgent:
@@ -234,6 +234,20 @@ async def _run_benchmark_async(
         await agent.close()
 
     wer_result = wer_stats(wer_items_refs, wer_items_hyp) if wer_items_refs else {}
+    cer_result = cer_stats(wer_items_refs, wer_items_hyp) if wer_items_refs else {}
+
+    # Offline deterministic diagnostics, always computable from captured data.
+    try:
+        from bench.scoring.emotion import emotion_metrics
+        from bench.scoring.prosody import prosody_metrics
+
+        offline = {
+            "cer": cer_result or None,
+            "prosody": prosody_metrics(aggregations),
+            "emotion": emotion_metrics(aggregations),
+        }
+    except Exception as exc:  # pragma: no cover - defensive; offline layer is optional
+        offline = {"cer": cer_result or None, "warning": f"offline metrics unavailable: {exc!r}"}
 
     judge = None
     if judge_url:
@@ -245,6 +259,7 @@ async def _run_benchmark_async(
     rep = aggregate(
         aggregations,
         wer=wer_result.get("wer"),
+        cer=cer_result.get("cer"),
         judge=judge,
         agent=label,
     )
@@ -254,6 +269,7 @@ async def _run_benchmark_async(
         "scenarios": list(sc_map.keys()),
         "n_repeats": n_repeats,
         "wer": wer_result if wer_result else None,
+        "offline": offline,
         "judge_active": bool(judge and judge.get("scored")),
         "corpus_sources": corpus_sources,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),

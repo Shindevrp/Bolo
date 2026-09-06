@@ -103,9 +103,15 @@ class TasaWSAdapter(SpeechAgent):
             "interrupt": EventType.INTERRUPT,
             "status": EventType.STATUS,
             "error": EventType.ERROR,
+            "prosody": EventType.PROSODY,
         }
         et = mapping.get(t)
         if et is None:
             return None
+        if et is EventType.PROSODY:
+            label = data.get("label") or "neutral"
+            emotion = data.get("emotion") or ""
+            text = f"{label}|{emotion}"
+            return Event.make(et, text=text)
         text = data.get("text") or None
         return Event.make(et, text=text)

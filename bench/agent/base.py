@@ -29,6 +29,7 @@ class EventType(Enum):
     RESPONSE_DELAY = auto()
     STATUS = auto()
     ERROR = auto()
+    PROSODY = auto()           # emitted TTS prosody profile (label + emotion)
 
 
 @dataclass

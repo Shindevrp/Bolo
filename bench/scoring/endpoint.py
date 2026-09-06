@@ -391,9 +391,60 @@ def compute_endpoint_metrics(samples: EndpointSample) -> dict[str, MetricResult]
     return out
 
 
+def _f1(precision: float | None, recall: float | None) -> float | None:
+    if precision is None or recall is None or precision + recall == 0:
+        return None
+    return 2 * precision * recall / (precision + recall)
+
+
+def compute_eot_f1(samples: EndpointSample) -> dict[str, MetricResult]:
+    """End-of-Turn detection F1.
+
+    Each user turn with a committed speech_end is a single end-of-turn
+    detection. The agent's turn-taking decision is classified against the
+    document window [speech_end, speech_end + ENDPOINT_LATE_S]:
+
+      True Positive  response started in the window         (correct EOT)
+      False Positive response started before speech_end     (false EOT,
+                                                             cut the user off)
+      False Negative no response by the window end          (missed EOT)
+
+    Precision/recall/F1 follow directly; every turn with a speech_end is in the
+    denominator, so the reader can always judge the sample size.
+    """
+    tp = fp = fn = 0
+    turns = [t for t in samples.turns if t.speech_end is not None]
+    for t in turns:
+        if t.pre_end_response:
+            fp += 1
+        elif t.response_after_end is None or (t.response_after_end - t.speech_end) > ENDPOINT_LATE_S:
+            fn += 1
+        else:
+            tp += 1
+    precision = (tp / (tp + fp)) if (tp + fp) else None
+    recall = (tp / (tp + fn)) if (tp + fn) else None
+    return {
+        "eot_true_positives": MetricResult(value=float(tp), numerator=tp, denominator=len(turns),
+                                           note="responses started within the EOT window"),
+        "eot_false_positives": MetricResult(value=float(fp), numerator=fp, denominator=len(turns),
+                                            note="responses started before speech_end (cut-offs)"),
+        "eot_false_negatives": MetricResult(value=float(fn), numerator=fn, denominator=len(turns),
+                                            note="no response within the EOT window (missed)"),
+        "eot_precision": MetricResult(value=precision, numerator=tp, denominator=tp + fp,
+                                      note="TP / (TP + FP)"),
+        "eot_recall": MetricResult(value=recall, numerator=tp, denominator=tp + fn,
+                                   note="TP / (TP + FN)"),
+        "eot_f1": MetricResult(value=_f1(precision, recall), numerator=tp,
+                               denominator=tp + fp + fn,
+                               note="harmonic mean of precision and recall"),
+    }
+
+
 def analyze_results(results: list[ScenarioResult], spoken_by_scenario: dict[str, list[tuple[str, float]]] | None = None) -> dict:
     samples = collect_endpoint_samples(results, spoken_by_scenario)
-    return compute_endpoint_metrics(samples)
+    metrics = compute_endpoint_metrics(samples)
+    metrics.update(compute_eot_f1(samples))
+    return metrics
 
 
 # ---------------------------------------------------------------------------
@@ -412,11 +463,14 @@ _ROWS = [
     ("Barge-in Stop P50",       "barge_in_stop_p50",       "how quickly TTS stops"),
     ("Barge-in Stop P95",       "barge_in_stop_p95",       "how quickly TTS stops (worst)"),
     ("Recovery Success Rate",   "recovery_success_rate",   "% of interruptions that recover"),
+    ("EOT Precision",           "eot_precision",           "correct EOT response / all responses begun"),
+    ("EOT Recall",              "eot_recall",              "correct EOT response / all turns ended"),
+    ("EOT F1",                  "eot_f1",                  "harmonic mean of EOT precision and recall"),
 ]
 
 
 def render_metrics(metrics: dict[str, MetricResult]) -> str:
-    lines = ["Endpointing / Barge-in metrics", "-" * 78]
+    lines = ["Endpointing / Barge-in / EOT metrics", "-" * 78]
     lines.append(f"{'Metric':<26} {'value':>12} {'n/d':>10}  note")
     lines.append("-" * 78)
     for label, key, note in _ROWS:
@@ -425,7 +479,12 @@ def render_metrics(metrics: dict[str, MetricResult]) -> str:
             lines.append(f"{label:<26} {'n/a':>12} {'-':>10}  {note}")
             continue
         v = m.value
-        vs = f"{v*100:.1f}%" if "Rate" in label or "Capture" in label else f"{v:.3f}s"
+        if "EOT" in label or "Precision" in label or "Recall" in label:
+            vs = f"{v:.3f}"
+        elif "Rate" in label or "Capture" in label:
+            vs = f"{v*100:.1f}%"
+        else:
+            vs = f"{v:.3f}s"
         nd = f"{m.numerator}/{m.denominator}"
         lines.append(f"{label:<26} {vs:>12} {nd:>10}  {m.note or note}")
     return "\n".join(lines)

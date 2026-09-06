@@ -40,6 +40,81 @@ def cmd_endpoint(args) -> int:
     return 0
 
 
+def cmd_offline(args) -> int:
+    """Compute the deterministic offline metrics (CER, EOT F1, prosody,
+    emotion) from captured events and/or curated offline corpora.
+
+    Uses dumped timelines when `--events` is given; otherwise evaluates the
+    offline-curated corpora only (emotion classifier accuracy, prosody cue
+    coverage). No live agent is required.
+    """
+    metrics = {}
+    if args.events and Path(args.events).exists():
+        results = _load_results(args.events)
+
+        from bench.scoring.emotion import emotion_metrics
+        from bench.scoring.endpoint import analyze_results, render_metrics
+        from bench.scoring.prosody import prosody_metrics
+
+        ep = analyze_results(results, _spoken_ground_truth(args.scenarios or "all"))
+        metrics["endpointing_eot"] = ep
+        metrics["prosody"] = prosody_metrics(results)
+        metrics["emotion"] = emotion_metrics(results)
+        print(render_metrics(ep))
+    else:
+        from bench.scoring.emotion import evaluate_emotion
+        from bench.scoring.prosody import prosody_check
+
+        metrics["emotion"] = evaluate_emotion()
+        metrics["prosody"] = prosody_check("Let me think about that.", responding_to_question=False)
+        print("Offline metric corpora: no event timeline provided (--events).")
+
+    # CER: character error is offline by construction — measured straight on
+    # the harness ASR corpus rather than reconstructed events.
+    cer_value = _offline_cer(args)
+    if cer_value is not None:
+        metrics["cer"] = cer_value
+        print(f"\nCharacter Error Rate (CER): {cer_value['cer'] * 100:.2f}% "
+              f"over {cer_value['items']} item(s)")
+    else:
+        print("\nCharacter Error Rate (CER): n/a (no ASR corpus reference vs hypothesis)")
+
+    for label, m in metrics.items():
+        if isinstance(m, dict):
+            print(f"\n[{label}]")
+            for k, v in m.items():
+                if isinstance(v, dict):
+                    print(f"  {k}: {v}")
+                else:
+                    print(f"  {k}: {v}")
+    return 0
+
+
+def _offline_cer(args) -> dict | None:
+    """CER from an ASR corpus + captured hypotheses when both are available."""
+    from bench.scoring.wer import cer_stats
+
+    if not (args.events and Path(args.events).exists()):
+        return None
+    results = _load_results(args.events)
+    refs: list[str] = []
+    hyps: list[str] = []
+    spoken = _spoken_ground_truth(args.scenarios or "all")
+    for r in results:
+        if r.scenario.id not in ("asr_wer", "robustness"):
+            continue
+        transcripts = r.timeline.final_transcripts()
+        hyp = transcripts[-1] if transcripts else ""
+        ref = spoken.get(r.scenario.id, [("", 0.0)])[0][0]
+        if ref:
+            refs.append(ref)
+            hyps.append(hyp)
+    if not refs:
+        return None
+    st = cer_stats(refs, hyps)
+    return st or None
+
+
 def _spoken_ground_truth(scenarios_spec: str) -> dict:
     """Extract the scripted user-utterance reference texts from scenario speak
     steps, keyed by scenario id, so Completion Capture can score against the
@@ -181,6 +256,11 @@ def main(argv=None) -> int:
     p_end.add_argument("--events", default="bench/events/latest.json", help="write raw event timelines JSON")
     p_end.add_argument("--label", default="TASA")
 
+    p_off = sub.add_parser("offline", help="Run offline deterministic metrics (CER, EOT F1, prosody, emotion)")
+    p_off.add_argument("--scenarios", default="all")
+    p_off.add_argument("--events", default=None, help="use a captured event timeline JSON for CER/EOT/prosody/emotion")
+    p_off.add_argument("--limit", type=int, default=10)
+
     p_cmp = sub.add_parser("compare", help="Compare two benchmark reports")
     p_cmp.add_argument("--a", required=True)
     p_cmp.add_argument("--b", required=True)
@@ -192,6 +272,8 @@ def main(argv=None) -> int:
         return cmd_run(args)
     if args.command == "endpoint":
         return cmd_endpoint(args)
+    if args.command == "offline":
+        return cmd_offline(args)
     if args.command == "compare":
         return cmd_compare(args)
     parser.print_help()

@@ -225,6 +225,7 @@ def aggregate(
     results: list[ScenarioResult],
     *,
     wer: float | None = None,
+    cer: float | None = None,
     judge: dict | None = None,
     agent: str = "unnamed",
 ) -> Report:
@@ -264,7 +265,7 @@ def aggregate(
     priorities = _priorities(scores, issues)
 
     # -- Regression rows from scenario results --
-    regression = _build_regression(results, wer)
+    regression = _build_regression(results, wer, cer)
 
     rep = Report(
         agent=agent,
@@ -308,7 +309,7 @@ def _priorities(scores: dict, issues: dict) -> list[str]:
     return ranked
 
 
-def _build_regression(results: list[ScenarioResult], wer: float | None) -> list[RegressionRow]:
+def _build_regression(results: list[ScenarioResult], wer: float | None, cer: float | None = None) -> list[RegressionRow]:
     rows: list[RegressionRow] = []
     by_id = _result_by_id(results)
 
@@ -374,4 +375,48 @@ def _build_regression(results: list[ScenarioResult], wer: float | None) -> list[
             "transcript + response captured",
             r.ok, "minor", "Error recovery")
 
+    # CER-001: character error is the ASR companion to WER — same corpus, char level.
+    if cer is not None:
+        add("CER-001", "asr_wer", "(LibriSpeech clip)",
+            "Character-level transcript error is low",
+            f"CER {cer*100:.1f}%",
+            cer <= 0.20,
+            "major" if cer > 0.20 else "minor", "ASR/Segmentation")
+
+    # EOT-001: end-of-turn detection F1 over turn_taking/baseline turns.
+    eot = _eot_f1(results)
+    if eot is not None:
+        tp, fp, fn = eot
+        add("EOT-001", "turn_taking", "(end-of-turn timing)",
+            "End-of-turn detection F1 is high (no cut-offs, no misses)",
+            f"TP={tp} FP={fp} FN={fn}",
+            tp >= 1 and fp == 0 and fn == 0,
+            "major" if (fp or fn) else "minor", "Turn-taking")
+
     return rows
+
+
+def _eot_f1(results: list[ScenarioResult]):
+    """Tally end-of-turn detection decisions over deterministic scenarios."""
+    from bench.scoring.endpoint import (
+        ENDPOINT_LATE_S,
+        collect_endpoint_samples,
+        reconstruct_user_turns,
+    )
+
+    tp = fp = fn = 0
+    for r in results:
+        if r.scenario.id not in ("turn_taking", "baseline"):
+            continue
+        for t in reconstruct_user_turns(r.timeline):
+            if t.speech_end is None:
+                continue
+            if t.pre_end_response:
+                fp += 1
+            elif t.response_after_end is None or (t.response_after_end - t.speech_end) > ENDPOINT_LATE_S:
+                fn += 1
+            else:
+                tp += 1
+    if tp + fp + fn == 0:
+        return None
+    return tp, fp, fn

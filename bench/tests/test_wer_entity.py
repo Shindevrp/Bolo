@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from bench.scoring.wer import normalize, wer, wer_stats
+from bench.scoring.wer import cer, cer_stats, normalize, wer, wer_stats
 from bench.scoring.entity_scan import (
     extract_capitalized_entities,
     user_provided_entities,
@@ -33,6 +33,37 @@ class TestWER:
         st = wer_stats(["a b c"], ["a b c"])
         assert st["wer"] == 0.0
         assert st["items"] == 1
+
+
+class TestCER:
+    def test_identical(self):
+        assert cer("the quick brown fox", "the quick brown fox") == 0.0
+
+    def test_single_char_substitution(self):
+        assert cer("bat", "cat") == pytest.approx(1 / 3)
+
+    def test_char_insertion(self):
+        assert cer("abc", "abxc") == pytest.approx(1 / 3)
+
+    def test_char_deletion(self):
+        assert cer("abxc", "abc") == pytest.approx(0.25)
+
+    def test_empty_hyp(self):
+        assert cer("hello world", "") == 1.0
+
+    def test_empty_ref_matches(self):
+        assert cer("", "") == 0.0
+
+    def test_caps_and_punct_normalized(self):
+        assert cer("What time?", "what time") == 0.0
+
+    def test_stats(self):
+        st = cer_stats(["a b c"], ["a b c"])
+        assert st["cer"] == 0.0
+        assert st["items"] == 1
+        assert st["chars"] == 3
+        assert st["errors"] == 0
+        assert len(st["per_item"]) == 1
 
 
 class TestEntityScan:
