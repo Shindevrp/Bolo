@@ -1246,7 +1246,9 @@ class StreamingPipeline:
             if used_speculation:
                 full = spec_full or ""
                 ctx.dialogue_state = DialogueState.INTERRUPTIBLE
-                await self._emit(PipelineEvent.LLM_TOKEN, full, session_id)
+                stripped = self._tool_registry.strip_calls(full)
+                if stripped:
+                    await self._emit(PipelineEvent.LLM_TOKEN, stripped, session_id)
                 tool_calls = self._tool_registry.find_calls(full)
                 if not tool_calls:
                     for c in chunker.feed(full):
@@ -1278,7 +1280,6 @@ class StreamingPipeline:
                         self._log_latency("llm_first_token")
                         first_token = False
                     full += token
-                    await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
 
                     if not tool_marker_seen and "{tool:" in full:
                         tool_marker_seen = True
@@ -1287,8 +1288,11 @@ class StreamingPipeline:
                         chunker.reset()
                         continue
                     if tool_marker_seen:
+                        if self._tool_registry.find_calls(full):
+                            break
                         continue
 
+                    await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
                     for c in chunker.feed(token):
                         await push(1, self._tool_registry.strip_calls(c))
 
@@ -1330,9 +1334,12 @@ class StreamingPipeline:
                     if int_ev.is_set():
                         return
 
+                    tool_start = time.perf_counter()
                     tool_results = await asyncio.gather(
                         *[self._tool_registry.execute_call_with_retry(c) for c in tool_calls]
                     )
+                    self._latency.measure("tool_exec", tool_start)
+                    self._log_latency("tool_exec")
                     for tr in tool_results:
                         followup_messages.append({
                             "role": "tool",
