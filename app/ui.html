@@ -103,6 +103,27 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
       c=document.getElementById('vcc'),db=document.getElementById('vdbg'),er=document.getElementById('verr');
   var ws=null,st=null,ac=null,pr=null,sc=null,act=false,reconn=null,mode='voice',mr=null,
       retryDelay=1000,maxRetryDelay=30000,audioQ=[],audioPlaying=false,gainNode=null;
+  var _resFrac=0,_resPrev=0,_resHave=false;
+  // The pipeline expects 16kHz mono PCM. `new AudioContext({sampleRate:16000})`
+  // is ignored on some browsers (Safari/iOS force 48kHz), which made Whisper
+  // interpret 48k audio as 16k and transcribe it as garbled/slowed speech. This
+  // resampler guarantees 16k on the wire at whatever rate the context runs at.
+  function _to16k(buf){
+    var rate=ac?ac.sampleRate:16000;
+    if(!rate||rate===16000)return buf;
+    var ratio=rate/16000,out=[];
+    for(var i=0;i<buf.length;i++){
+      var cur=buf[i];
+      if(!_resHave){_resPrev=cur;_resHave=true;_resFrac=0;continue;}
+      while(_resFrac<=1){
+        out.push(_resPrev+(cur-_resPrev)*_resFrac);
+        _resFrac+=ratio;
+      }
+      _resFrac-=1;
+      _resPrev=cur;
+    }
+    return new Float32Array(out);
+  }
 
   function dbg(t){db.textContent=t;}
   function err(t){er.textContent=t;setTimeout(function(){if(er.textContent===t)er.textContent='';},5000);}
@@ -128,9 +149,9 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
   var _pcmCnt=0;
   function sendPcm(inp){
     try{
-      var pcm=new Int16Array(inp.length);
+      var src=_to16k(inp),pcm=new Int16Array(src.length);
       var peak=0;
-      for(var i=0;i<inp.length;i++){var s=Math.max(-1,Math.min(1,inp[i]));pcm[i]=s<0?s*0x8000:s*0x7FFF;if(Math.abs(s)>peak)peak=Math.abs(s);}
+      for(var i=0;i<src.length;i++){var s=Math.max(-1,Math.min(1,src[i]));pcm[i]=s<0?s*0x8000:s*0x7FFF;if(Math.abs(s)>peak)peak=Math.abs(s);}
       if(ws&&ws.readyState===1){ws.send(pcm.buffer);if(++_pcmCnt%10===0)dbg('Audio peak='+peak.toFixed(3));}
     }catch(x){}
   }

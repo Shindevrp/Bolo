@@ -41,15 +41,48 @@ class FasterWhisperSTT(STTProvider):
 
     def _transcribe_segment(self, audio_bytes: bytes) -> str | None:
         audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        if audio.size == 0:
+            return None
+        # Whisper is sensitive to overall level: boost quiet mic captures up to
+        # a sane ceiling so clipped/tiny signal doesn't degrade into garbage.
+        peak = float(np.max(np.abs(audio)))
+        if 0.0 < peak < 0.25:
+            audio = audio * min(1.0 / peak, 4.0)
         segments, _ = self.model.transcribe(
             audio,
             language=self.language,
-            beam_size=1,
-            best_of=1,
-            vad_filter=False,
+            beam_size=5,
+            best_of=5,
+            temperature=0.0,
+            # Skip pure-silence / noise tails inside the capture so Whisper
+            # isn't nudged into hallucinating tokens on near-silent audio.
+            vad_filter=True,
+            # Conditioning on the previous text makes Whisper lock onto (and
+            # repeat) its own prior output on noisy/short audio — the classic
+            # source of trailing-token hallucinations. Turn it off.
+            condition_on_previous_text=False,
         )
         text = " ".join(seg.text for seg in segments)
-        return text.strip() or None
+        return self._trim_repetition(text).strip() or None
+
+    @staticmethod
+    def _trim_repetition(text: str) -> str:
+        
+        if not text:
+            return text
+        words = text.split()
+        if len(words) < 5:
+            return text
+        tail = words[-1].lower().strip(".,!?;:'\"")
+        if not tail:
+            return text
+        run = 0
+        for w in reversed(words):
+            if w.lower().strip(".,!?;:'\"") == tail:
+                run += 1
+            else:
+                break
+        return " ".join(words[:-run]).strip() if run >= 3 else text
 
     async def transcribe(self, audio_bytes: bytes) -> str:
         return await asyncio.to_thread(self._transcribe_segment, audio_bytes) or ""
