@@ -105,7 +105,15 @@ def _offline_cer(args) -> dict | None:
             continue
         transcripts = r.timeline.final_transcripts()
         hyp = transcripts[-1] if transcripts else ""
-        ref = spoken.get(r.scenario.id, [("", 0.0)])[0][0]
+        # Reference comes from the persisted per-scenario refs in the dump when
+        # available; falls back to scripted speak/corpus step text otherwise.
+        refs_for = getattr(r, "refs", None) or ""
+        if isinstance(refs_for, list):
+            ref = refs_for[0] if refs_for else ""
+        else:
+            ref = refs_for
+        if not ref:
+            ref = spoken.get(r.scenario.id, [("", 0.0)])[0][0]
         if ref:
             refs.append(ref)
             hyps.append(hyp)
@@ -163,6 +171,7 @@ def _load_results(events_path: str) -> "list":
         res = ScenarioResult(scenario=sc)
         res.timeline = tl
         res.error = item.get("error") or ""
+        res.refs = list(item.get("refs") or [])
         out.append(res)
     return out
 

@@ -203,3 +203,79 @@ def test_analyze_results_includes_eot():
     m = analyze_results([res])
     assert m["eot_f1"].value == pytest_close(1.0)
     assert m["completion_capture_rate"] is not None
+
+
+def test_multi_turn_transcripts_attach_to_own_turn():
+    """Transcripts after turn 1's end must NOT attach to turn 1 just because
+    its window was previously unbounded."""
+    res = _eot_result([
+        (EventType.SPEECH_START, 1.0, None),
+        (EventType.SPEECH_END, 2.0, None),
+        (EventType.TRANSCRIPT, 2.6, "one"),
+        (EventType.SPEECH_START, 4.0, None),
+        (EventType.SPEECH_END, 5.0, None),
+        (EventType.TRANSCRIPT, 5.5, "two"),
+    ])
+    samples = collect_endpoint_samples([res])
+    assert [t.transcript for t in samples.turns] == ["one", "two"]
+    assert samples.turns[0].transcript_time == pytest_close(2.6)
+    assert samples.turns[1].transcript_time == pytest_close(5.5)
+
+
+def test_recovery_does_not_bleed_across_scenarios():
+    """Recovery is scored against the SAME scenario's later turns only: a
+    detected barge-in must not be 'recovered' by an unrelated scenario."""
+    sc_a = Scenario(id="sca", name="A", category="barge_in",
+                    steps=[Step(kind="speak", text="Q"),
+                           Step(kind="interrupt_during_playback", text="Wait"),
+                           Step(kind="drain", timeout_ms=1000)])
+    tl_a = Timeline()
+    tl_a.add(_ev(EventType.SPEECH_START, 1.0))
+    tl_a.add(_ev(EventType.SPEECH_END, 2.0))
+    tl_a.add(_ev(EventType.TTS_CHUNK, 3.0))
+    tl_a.add(_ev(EventType.SPEECH_START, 3.7))     # injection
+    tl_a.add(_ev(EventType.INTERRUPT, 3.9))        # detected
+    # no later user speech in scenario A -> NOT recovered
+    res_a = ScenarioResult(scenario=sc_a)
+    res_a.timeline = tl_a
+
+    sc_b = Scenario(id="scb", name="B", category="barge_in",
+                    steps=[Step(kind="speak", text="Q"),
+                           Step(kind="interrupt_during_playback", text="Wait"),
+                           Step(kind="drain", timeout_ms=1000)])
+    tl_b = Timeline()
+    tl_b.add(_ev(EventType.SPEECH_START, 0.1))     # unrelated clock, restarts near 0
+    tl_b.add(_ev(EventType.SPEECH_END, 0.5))
+    tl_b.add(_ev(EventType.SPEECH_START, 6.0))     # later speech in another scenario
+    res_b = ScenarioResult(scenario=sc_b)
+    res_b.timeline = tl_b
+
+    samples = collect_endpoint_samples([res_a, res_b])
+    metrics = compute_endpoint_metrics(samples)
+    # Before the fix, scenario B's speech_start at 6.0 marked scenario A's
+    # barge-in as recovered -> value 1.0. Correctly: no recovery in scenario A.
+    assert metrics["recovery_success_rate"].numerator == 0
+    assert metrics["recovery_success_rate"].denominator == 1
+    assert metrics["recovery_success_rate"].value == 0.0
+
+
+def test_fragment_count_does_not_bleed_across_scenarios():
+    """Repeated transcript text only counts as a split within one scenario."""
+    def _one_turn(scenario_id: str):
+        res = _eot_result([
+            (EventType.SPEECH_START, 1.0, None),
+            (EventType.SPEECH_END, 2.0, None),
+            (EventType.TRANSCRIPT, 2.5, "same words"),
+        ])
+        res.scenario = Scenario(id=scenario_id, name=scenario_id, category="x")
+        return res
+
+    # One copy of identical text in two DIFFERENT scenarios is not a split.
+    samples = collect_endpoint_samples([_one_turn("sca"), _one_turn("scb")])
+    metrics = compute_endpoint_metrics(samples)
+    assert metrics["utterance_fragment_rate"].numerator == 0
+
+    # Two copies within the SAME scenario are still a split.
+    samples = collect_endpoint_samples([_one_turn("sca"), _one_turn("sca")])
+    metrics = compute_endpoint_metrics(samples)
+    assert metrics["utterance_fragment_rate"].numerator == 1

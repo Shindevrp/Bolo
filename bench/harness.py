@@ -76,16 +76,23 @@ def build_corpus(scenario_corpus_map: dict[str, str], limits: dict[str, int]) ->
     return out
 
 
-def dump_event_timelines(results: list[ScenarioResult], path: str | Path) -> Path:
+def dump_event_timelines(
+    results: list[ScenarioResult],
+    path: str | Path,
+    refs_by_scenario: dict[str, list[str]] | None = None,
+) -> Path:
     """Persist the raw per-scenario event timelines to a JSON file so the
     endpointing/barge-in diagnostics can be recomputed offline without
-    re-running the whole benchmark."""
+    re-running the whole benchmark. Ground-truth reference texts (used by the
+    offline CER path) are persisted alongside when provided."""
+    refs_by_scenario = refs_by_scenario or {}
     out = []
     for r in results:
         out.append(
             {
                 "scenario": r.scenario.id,
                 "name": r.scenario.name,
+                "refs": refs_by_scenario.get(r.scenario.id, []),
                 "ok": r.ok,
                 "error": r.error,
                 "events": [
@@ -283,7 +290,13 @@ async def _run_benchmark_async(
             json.dump(data, f, indent=2)
 
     if events_out:
-        dump_event_timelines(aggregations, events_out)
+        refs_by_scenario: dict[str, list[str]] = {}
+        for res in aggregations:
+            if res.scenario.id in ("asr_wer", "robustness"):
+                refs = corpus_ground_truth(corpus, res.scenario.corpus)
+                if refs:
+                    refs_by_scenario[res.scenario.id] = refs
+        dump_event_timelines(aggregations, events_out, refs_by_scenario=refs_by_scenario)
 
     return rep
 

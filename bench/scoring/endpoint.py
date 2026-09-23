@@ -20,16 +20,21 @@ reader can judge the sample size. All latency deltas are in seconds.
 """
 from __future__ import annotations
 
+import re
 import statistics
 from dataclasses import dataclass, field
 
 from bench.agent.base import EventType
 from bench.driver.runner import ScenarioResult, Timeline
 
-# Thresholds (seconds) for the diagnostics; documented + tunable so results are
+# Threshold (seconds) for the diagnostics; documented + tunable so results are
 # reproducible.
 ENDPOINT_LATE_S = 3.0    # speech_end -> response beyond this = missed endpoint
-BARGE_STOP_TAIL_S = 2.0  # how long after a barge-in start we look for the last TTS audio
+
+# Words that mark an injected utterance as a harmless backchannel rather than a
+# real barge-in. Word-boundary matched so "look"/"alright" never match "ok"/
+# "right" inside ordinary speech.
+_BACKCHANNEL_RE = re.compile(r"\b(uh[-\s]huh|yeah|right|okay|ok)\b", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -41,6 +46,7 @@ class UserTurn:
     """One user utterance (speech window) plus the agent's response timing."""
     speech_start: float
     speech_end: float | None
+    scenario: str = ""
     transcript: str | None = None
     transcript_time: float | None = None
     partials: list[tuple[float, str]] = field(default_factory=list)
@@ -50,7 +56,6 @@ class UserTurn:
     # First agent output (LLM or TTS) strictly AFTER speech_end; None if the
     # agent never responded after the user finished.
     response_after_end: float | None = None
-    interrupt_time: float | None = None
 
 
 @dataclass
@@ -58,6 +63,7 @@ class BargeAttempt:
     """A scripted real-interruption injection and how the agent reacted."""
     start: float                  # when the interruption audio began going in
     text: str
+    scenario: str = ""
     saw_interrupt: bool = False
     interrupt_event_t: float | None = None
     tts_stop: float | None = None   # last TTS audio still playing when interrupted
@@ -94,38 +100,34 @@ def reconstruct_user_turns(tl: Timeline) -> list[UserTurn]:
     partials = [(t, x) for (et, t, x) in ev if et == EventType.PARTIAL_TRANSCRIPT]
     llms = [t for (et, t, _) in ev if et == EventType.LLM_TOKEN]
     ttss = [t for (et, t, _) in ev if et == EventType.TTS_CHUNK]
-    tts_dones = [t for (et, t, _) in ev if et == EventType.TTS_DONE]
-    interrupts = [t for (et, t, _) in ev if et == EventType.INTERRUPT]
-
-    def first_after(times, ref):
-        a = [x for x in times if x > ref + 1e-6]
-        return min(a) if a else None
 
     turns: list[UserTurn] = []
     for (st, _) in starts:
         end_t = next((e for e in ends if e > st + 1e-6), None)
         turns.append(UserTurn(speech_start=st, speech_end=end_t))
 
-    # Attach transcripts/partials to whichever turn's window contains them.
+    # Attach transcripts/partials to whichever turn's window contains them. A
+    # turn's window runs from its own speech_start through the START of the
+    # NEXT user turn (or forever for the last one), so a transcript is never
+    # attributed to an earlier turn after the user has moved on to the next
+    # utterance.
+    def _upper_bound(idx: int) -> float:
+        return turns[idx + 1].speech_start if idx + 1 < len(turns) else float("inf")
+
     for (t, x) in transcripts:
-        for turn in turns:
-            if turn.speech_end is None:
-                if t >= turn.speech_start:
-                    turn.transcript = turn.transcript or x
-                    turn.transcript_time = turn.transcript_time if turn.transcript_time is not None else t
-                    break
-            elif turn.speech_start - 1e-3 <= t < turn.speech_end + 9999:
-                turn.transcript = turn.transcript or x
-                if turn.transcript_time is None:
-                    turn.transcript_time = t
-                break
+        for idx, turn in enumerate(turns):
+            if t < turn.speech_start - 1e-3 or t >= _upper_bound(idx):
+                continue
+            turn.transcript = turn.transcript or x
+            if turn.transcript_time is None:
+                turn.transcript_time = t
+            break
     for (t, x) in partials:
-        for turn in turns:
-            if (turn.speech_end is None and t >= turn.speech_start) or (
-                turn.speech_end is not None and turn.speech_start - 1e-3 <= t < turn.speech_end + 9999
-            ):
-                turn.partials.append((t, x))
-                break
+        for idx, turn in enumerate(turns):
+            if t < turn.speech_start - 1e-3 or t >= _upper_bound(idx):
+                continue
+            turn.partials.append((t, x))
+            break
 
     response_times = sorted(
         [t for t in llms] + [t for t in ttss]
@@ -145,7 +147,6 @@ def reconstruct_user_turns(tl: Timeline) -> list[UserTurn]:
         # speech_end but before the next user turn begins.
         after = [t for t in response_times if se + 1e-6 < t < ub]
         turn.response_after_end = after[0] if after else None
-        turn.interrupt_time = first_after(interrupts, se)
 
     return turns
 
@@ -162,6 +163,8 @@ def collect_endpoint_samples(
     for r in results:
         tl = r.timeline
         turns = reconstruct_user_turns(tl)
+        for t in turns:
+            t.scenario = r.scenario.id
         samples.turns.extend(turns)
 
         # spoken ground truth from the scenario script if supplied
@@ -185,7 +188,7 @@ def collect_endpoint_samples(
         injection_steps = [s for s in steps if s.kind in ("interrupt_during_playback", "interrupt_during_llm")]
         for step in injection_steps:
             text = (step.text or "").strip()
-            is_bc = any(k in text.lower() for k in ("uh-huh", "uh huh", "yeah", "right", "okay", "ok"))
+            is_bc = bool(_BACKCHANNEL_RE.search(text.lower()))
             if cursor < len(speech_starts):
                 inject = speech_starts[cursor]
                 cursor += 1
@@ -211,7 +214,7 @@ def collect_endpoint_samples(
             else:
                 samples.barge_attempts.append(
                     BargeAttempt(
-                        start=inject, text=text,
+                        start=inject, text=text, scenario=r.scenario.id,
                         saw_interrupt=irq_t is not None, interrupt_event_t=irq_t,
                         tts_stop=tts_stop, already_idle=already_idle,
                     )
@@ -301,18 +304,20 @@ def compute_endpoint_metrics(samples: EndpointSample) -> dict[str, MetricResult]
 
     # --- 4. Utterance Fragment Rate ---
     # One thought delivered as multiple committed transcript turns. We compare
-    # repeated transcript text across turns within a scenario: an identical
+    # repeated transcript text across turns WITHIN a scenario: an identical
     # transcript appearing again after a prior one is evidence of a split.
+    # Grouped per scenario so identical text in unrelated scenarios does not
+    # count as a split.
     fragments, frag_den = 0, 0
-    seen: dict[str, int] = {}
-    per_scene = {}
+    seen_per_scene: dict[str, dict[str, int]] = {}
     for t in turns:
         if t.transcript is None:
             continue
         frag_den += 1
         key = t.transcript.strip().lower()
+        seen = seen_per_scene.setdefault(t.scenario, {})
         seen[key] = seen.get(key, 0) + 1
-    fragments = sum(1 for k, c in seen.items() if c > 1)
+    fragments = sum(1 for seen in seen_per_scene.values() for c in seen.values() if c > 1)
     out["utterance_fragment_rate"] = MetricResult(
         value=(fragments / frag_den) if frag_den else None, numerator=fragments, denominator=frag_den,
         note="same transcript committed more than once (split turn)",
@@ -373,14 +378,19 @@ def compute_endpoint_metrics(samples: EndpointSample) -> dict[str, MetricResult]
 
     # --- 9. Recovery Success Rate ---
     # Of the interruptions the agent actually detected, how many returned to a
-    # new listening turn (a fresh user speech_start or transcript) afterward.
+    # new listening turn (a fresh user speech_start) afterward. Recoveries are
+    # checked against speech starts within the SAME scenario, so a barge-in in
+    # one scenario is never "recovered" by an unrelated scenario's next turn.
+    starts_by_scene: dict[str, list[float]] = {}
+    for t in turns:
+        starts_by_scene.setdefault(t.scenario, []).append(t.speech_start)
     rec_ok, rec_den = 0, 0
-    all_speech_starts = sorted(t.speech_start for t in turns)
     for a in samples.barge_attempts:
         if not a.saw_interrupt or a.interrupt_event_t is None:
             continue
         rec_den += 1
-        recovered = any(s > a.interrupt_event_t + 1e-6 for s in all_speech_starts)
+        scene_starts = sorted(starts_by_scene.get(a.scenario, []))
+        recovered = any(s > a.interrupt_event_t + 1e-6 for s in scene_starts)
         if recovered:
             rec_ok += 1
     out["recovery_success_rate"] = MetricResult(
