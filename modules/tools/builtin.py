@@ -10,6 +10,7 @@ from modules.tools.registry import ToolRegistry, ToolSpec
 from modules.tools.weather import get_weather
 from modules.tools.web_search import search_web
 from modules.tools.news import get_news
+from modules.tools.local import search_places
 from modules.tools.reminder import set_reminder
 
 
@@ -206,14 +207,27 @@ def get_builtin_tools() -> ToolRegistry:
 
     registry.register(ToolSpec(
         name="get_news",
-        description="Get top news headlines",
+        description="Get top news headlines, optionally about a topic or place",
         parameters={
             "properties": {
-                "category": {"description": "news category: general, tech, science, or business"},
+                "topic": {"description": "general, tech, science, business, or any topic/place"},
             },
         },
         handler=get_news,
-        proactive_hint="the user asks about news, headlines, or what's happening in the world — use this instead of search_web.",
+        proactive_hint="the user asks about news, headlines, or what's happening in the world or somewhere — use this instead of search_web.",
+    ))
+
+    registry.register(ToolSpec(
+        name="search_places",
+        description="Find real restaurants, cafes, hotels, shops or sights on Google Maps",
+        parameters={
+            "properties": {
+                "query": {"description": "what to look for, e.g. 'biryani' or 'coworking space'"},
+                "location": {"description": "city or area, e.g. 'Bandra, Mumbai' (optional)"},
+            },
+        },
+        handler=search_places,
+        proactive_hint="the user asks for a place to eat, stay, shop or visit, or what's nearby — ALWAYS use search_places before naming any place.",
     ))
 
     registry.register(ToolSpec(

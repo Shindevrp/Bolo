@@ -1,0 +1,11 @@
+{
+  "search_parameters": {"engine": "google_news", "q": "Goa", "gl": "in", "hl": "en"},
+  "news_results": [
+    {"position": 1, "title": "Goa beaches reopen after monsoon", "source": {"name": "The Hindu"},
+     "link": "https://www.thehindu.com/x", "date": "09/26/2026, 07:00 AM, +0000 UTC"},
+    {"position": 2, "highlight": {"title": "Goa airport adds new flights to Delhi", "source": {"name": "Times of India"},
+     "link": "https://timesofindia.indiatimes.com/x"}, "stories": []},
+    {"position": 3, "title": "Tourist arrivals in Goa rise", "source": {"name": "Mint"}, "link": "https://livemint.com/x"},
+    {"position": 4, "title": "Fourth headline", "source": {"name": "Nobody"}, "link": "https://example.com/x"}
+  ]
+}

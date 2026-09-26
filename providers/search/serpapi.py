@@ -178,6 +178,14 @@ class SerpApiClient:
             logger.debug(f"serpapi fixture record failed: {e!r}")
 
 
+def locale_params() -> dict[str, str]:
+    """Google locale for every SerpApi call (India-first by default)."""
+    return {
+        "gl": os.getenv("SERPAPI_GL", "in"),
+        "hl": os.getenv("SERPAPI_HL", "en"),
+    }
+
+
 _client: SerpApiClient | None = None
 
 

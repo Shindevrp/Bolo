@@ -1,0 +1,12 @@
+{
+  "search_parameters": {"engine": "google", "q": "best time to visit goa", "gl": "in", "hl": "en"},
+  "organic_results": [
+    {"position": 1, "title": "Best Time to Visit Goa", "link": "https://www.goa-tourism.com/best-time",
+     "snippet": "November to February is the best time to visit Goa, with pleasant weather."},
+    {"position": 2, "title": "Goa weather by month", "link": "https://www.holidify.com/goa",
+     "snippet": "Monsoon runs June to September; many beach shacks close."},
+    {"position": 3, "title": "Goa travel guide", "link": "https://lonelyplanet.com/india/goa",
+     "snippet": "Peak season is December."},
+    {"position": 4, "title": "Fourth result", "link": "https://example.com/", "snippet": "Should not be read out."}
+  ]
+}

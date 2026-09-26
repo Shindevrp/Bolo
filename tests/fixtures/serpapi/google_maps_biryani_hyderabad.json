@@ -1,0 +1,13 @@
+{
+  "search_parameters": {"engine": "google_maps", "q": "biryani in Hyderabad", "type": "search", "hl": "en"},
+  "local_results": [
+    {"position": 1, "title": "Paradise Biryani", "rating": 4.1, "reviews": 98213, "price": "₹200–400",
+     "type": "Biryani restaurant", "address": "SD Road, Secunderabad", "open_state": "Open ⋅ Closes 11 pm",
+     "gps_coordinates": {"latitude": 17.4431, "longitude": 78.4867}},
+    {"position": 2, "title": "Shah Ghouse", "rating": 4.0, "reviews": 45120, "price": "₹200–400",
+     "type": "Hyderabadi restaurant", "address": "Tolichowki, Hyderabad"},
+    {"position": 3, "title": "Bawarchi", "rating": 4.2, "reviews": 60311,
+     "type": "Biryani restaurant", "address": "RTC X Roads, Hyderabad"},
+    {"position": 4, "title": "Fourth Place", "rating": 3.9, "reviews": 100, "type": "Restaurant", "address": "Nowhere"}
+  ]
+}

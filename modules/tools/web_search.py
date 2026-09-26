@@ -10,7 +10,7 @@ import re
 import time
 from typing import Any
 
-from providers.search.serpapi import SerpApiError, get_client
+from providers.search.serpapi import SerpApiError, get_client, locale_params
 
 
 def _strip_html(s: str) -> str:
@@ -85,6 +85,12 @@ def _wiki_search(query: str) -> str:
     return " | ".join(lines)
 
 
+def _clean(s: Any) -> str:
+    """Collapse whitespace; "|" is our result separator, so titles like
+    "Qutub Minar | ASI" become "Qutub Minar - ASI"."""
+    return " ".join(str(s or "").replace("|", "-").split())
+
+
 def _domain(link: str) -> str:
     host = urllib.parse.urlparse(link or "").netloc
     return host[4:] if host.startswith("www.") else host
@@ -137,8 +143,8 @@ def condense_google(data: dict[str, Any], n_organic: int = 2) -> str:
             parts.append(k)
     want = n_organic if parts else n_organic + 1
     for r in (data.get("organic_results") or [])[:want]:
-        title = str(r.get("title", "")).strip()
-        snippet = str(r.get("snippet", "")).strip()
+        title = _clean(r.get("title"))
+        snippet = _clean(r.get("snippet"))
         if not (title or snippet):
             continue
         src = _domain(r.get("link", ""))
@@ -174,7 +180,7 @@ async def search_web(query: str) -> str:
     client = get_client()
     if client.available:
         try:
-            data = await client.search("google", q=query, **_locale())
+            data = await client.search("google", q=query, **locale_params())
             summary = condense_google(data)
             if summary:
                 return summary
@@ -182,12 +188,3 @@ async def search_web(query: str) -> str:
             pass
     return await _fallback_search(query)
 
-
-def _locale() -> dict[str, str]:
-    """Google locale for every SerpApi call (India-first by default)."""
-    import os
-
-    return {
-        "gl": os.getenv("SERPAPI_GL", "in"),
-        "hl": os.getenv("SERPAPI_HL", "en"),
-    }

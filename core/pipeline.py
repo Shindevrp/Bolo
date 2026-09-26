@@ -2985,19 +2985,21 @@ class StreamingPipeline:
             system_prompt += tool_block
 
         # Entity queries (specific place/business/entity) MUST be verified via
-        # a search_web round-trip before any concrete name is spoken. Without
+        # a search round-trip before any concrete name is spoken. Without
         # this hard upstream gate the model can fabricate plausible-looking
         # restaurant/place names that then stream straight to TTS.
         if EntityGate.query_needs_verification(transcript):
             system_prompt += (
                 "\n\nENTITY VERIFICATION (mandatory):\n"
                 "The user is asking about a specific place, business, or named "
-                "entity. You MUST output exactly one tool call "
-                "{tool:search_web(query)} and wait for its result before naming "
-                "any specific place, restaurant, shop, or business.\n"
+                "entity. You MUST output exactly one tool call -- "
+                "{tool:search_places(query=..., location=...)} for somewhere to "
+                "eat, stay, shop or visit, otherwise {tool:search_web(query)} -- "
+                "and wait for its result before naming any specific place, "
+                "restaurant, shop, or business.\n"
                 "  - NEVER name, recommend, or describe a specific place, "
-                "restaurant, shop, or business unless its name came from the "
-                "search_web result in this turn.\n"
+                "restaurant, shop, or business unless its name came from a "
+                "search result in this turn.\n"
                 "  - If you do not have a verified name, say you're not sure "
                 "and offer to look it up — never invent one.\n"
                 "  - Do not produce any other text before the tool call."

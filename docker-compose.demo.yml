@@ -54,6 +54,11 @@ services:
       TASA_VAD_THRESHOLD: "0.5"
       TASA_EMOTION_ENABLED: "0"
       TASA_TTS_MODEL: /app/models/piper/en_US-lessac-medium.onnx
+      # SerpApi drives search_web. Empty = keyless, and search_web falls back
+      # to DuckDuckGo Instant Answers then Wikipedia. Free tier: 250/mo.
+      SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
+      SERPAPI_CREDIT_CAP: ${SERPAPI_CREDIT_CAP:-200}
+      SERPAPI_GL: ${SERPAPI_GL:-in}
     ports:
       - "${TASA_DEMO_APP_PORT:-8000}:8000"
     volumes:

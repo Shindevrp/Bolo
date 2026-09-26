@@ -1,0 +1,15 @@
+{
+  "search_parameters": {"engine": "google", "q": "who is aravind srinivas", "gl": "in", "hl": "en"},
+  "knowledge_graph": {
+    "title": "Aravind Srinivas",
+    "type": "Computer scientist",
+    "description": "Aravind Srinivas is an Indian computer scientist and co-founder of Perplexity AI."
+  },
+  "organic_results": [
+    {"position": 1, "title": "Aravind Srinivas - Wikipedia", "link": "https://en.wikipedia.org/wiki/Aravind_Srinivas",
+     "snippet": "Aravind Srinivas is the CEO of Perplexity AI."},
+    {"position": 2, "title": "Aravind Srinivas | LinkedIn", "link": "https://in.linkedin.com/in/aravind",
+     "snippet": "CEO at Perplexity."},
+    {"position": 3, "title": "Third result", "link": "https://example.com/", "snippet": "Should not be read out."}
+  ]
+}

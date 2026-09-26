@@ -3,6 +3,7 @@ from providers.search.serpapi import (
     SerpApiError,
     SerpApiUnavailable,
     get_client,
+    locale_params,
     set_client,
 )
 
@@ -11,5 +12,6 @@ __all__ = [
     "SerpApiError",
     "SerpApiUnavailable",
     "get_client",
+    "locale_params",
     "set_client",
 ]

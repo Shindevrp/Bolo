@@ -1,0 +1,16 @@
+{
+  "search_parameters": {"engine": "google", "q": "height of qutub minar", "gl": "in", "hl": "en"},
+  "answer_box": {
+    "type": "organic_result",
+    "title": "Qutub Minar height",
+    "answer": "72.5 m",
+    "link": "https://en.wikipedia.org/wiki/Qutb_Minar"
+  },
+  "organic_results": [
+    {"position": 1, "title": "Qutb Minar - Wikipedia", "link": "https://en.wikipedia.org/wiki/Qutb_Minar",
+     "snippet": "The Qutb Minar is a minaret and victory tower that forms part of the Qutb complex in Mehrauli, New Delhi."},
+    {"position": 2, "title": "Qutub Minar | ASI", "link": "https://www.asi.nic.in/qutub-minar/",
+     "snippet": "The Qutub Minar is a 72.5 metre tall tower of red sandstone built in the 13th century."},
+    {"position": 3, "title": "Third result", "link": "https://example.com/", "snippet": "Should not be read out."}
+  ]
+}
