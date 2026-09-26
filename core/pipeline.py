@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import AsyncGenerator
+from typing import AsyncGenerator, ClassVar
 
 from modules.tts.chunker import TTSChunker
 from modules.tts.sanitize import sanitize_for_tts
@@ -40,6 +41,12 @@ from modules.metrics.latency import LatencyTracker
 from modules.metrics.logger import MetricsLogger
 from modules.tools.registry import ToolRegistry
 from modules.tools.builtin import get_builtin_tools
+from modules.laya.questions import (
+    CADENCE1_QUESTIONS,
+    PREFETCH_QUESTIONS,
+    TURN_QUESTIONS,
+)
+from providers.laya.client import LayaSystem1
 from utils.audio import rms_energy
 from utils.logger import get_logger
 
@@ -48,11 +55,42 @@ logger = get_logger("pipeline")
 ECHO_GRACE_SECONDS = 0.35
 ECHO_FLOOR_MARGIN = 1.5
 
+# During playback the barge energy gate is raised above the acoustic echo
+# floor (the assistant's own voice bleeding into the mic must never trigger a
+# self-interrupt). On loud/close-field setups that floor can lift past a real
+# user's speaking level, so a genuine interruption then never crosses the gate
+# and the whole response plays out. Frames that clear the base speech-energy
+# threshold but sit below the raised floor are therefore decided by CONTENT:
+# a short probe of the buffered speech that is neither conversational feedback
+# nor a strong word-overlap with the sentence currently being spoken triggers
+# the interrupt anyway, while echoed assistant audio (which matches that
+# sentence) does not.
+ECHO_OVERLAP_RATIO = 0.55  # probe-vs-spoken word overlap that means "echo"
+
 # Fixed pipeline frame: 128ms at 16k mono 16-bit. All incoming audio is
 # segmented into these frames so VAD/turn logic sees uniform windows and the
 # SileroVAD hidden state decays across trailing-silence frames (otherwise a
 # large silence chunk can be misclassified as speech and swallow the turn end).
 FRAME_BYTES = 4096
+
+# Cadence-1 System-1 decision thresholds (Phase-3/4, opt-in via TASA_LAYA_PHASE3).
+# Mirroring the Phase-2 action bar, base checkpoints are over-confident so these
+# are deliberately strict: all three must hold before an endpoint is shortened
+# or a barge verdict is acted on, and a probe result is only "fresh" within a
+# short window of the ~1s partial cadence.
+_C1_ACT_PROB = 0.9    # turn_complete noul probability required
+_C1_SCORE_REQ = 7.0   # completion_conf score (0-10) required
+_C1_CONF_REQ = 0.8    # barge_type choice confidence required
+_C1_FRESH_S = 2.0     # max probe age for the result to be trusted
+
+# Soft-barge content lane (below the echo-raised floor): full STT on the
+# growing buffer is expensive, so buffer probes are rate-limited and run in a
+# background task instead of stalling the 128ms audio loop on every frame, and
+# a single blurred frame must never cancel the response -- the interrupt only
+# fires once enough frames have sustained the soft candidate.
+_BARGE_PROBE_INTERVAL_S = 0.25   # min gap between background buffer probes
+_SOFT_BARGE_MIN_FRAMES = 3       # sustained soft frames before an interrupt
+_SOFT_BARGE_PROBE_ATTEMPTS = 3   # rapid background probes before pacing resumes
 
 # Energy floor (normalized 0-1) below which a frame is treated as silence even
 # if the VAD reports speech. Guards against the VAD RNN carrying its hidden
@@ -106,6 +144,14 @@ class ConversationContext:
     prev_intent: str = ""
     user_sentiment: str = "neutral"
     user_repeated: bool = False
+    # Phase-2 (System-1) decisions. Defaults reproduce today's behavior:
+    # invoke the LLM, no fast path, primary model tier, no urgency shortcut.
+    invoke_llm: bool = True
+    urgent: bool = False
+    fast_path: bool = False
+    model_tier: str = "primary"
+    complexity_locked: bool = False
+    sentiment_locked: bool = False
 
 
 class StreamingPipeline:
@@ -122,6 +168,8 @@ class StreamingPipeline:
         backchannel_generator: BackchannelGenerator | None = None,
         backchannel_timing: BackchannelTiming | None = None,
         emotion_classifier: EmotionClassifier | None = None,
+        system1: LayaSystem1 | None = None,
+        llm_fallback: LLMProvider | None = None,
         *,
         use_hysteresis_vad: bool = True,
         endpoint_short_ms: int = 350,
@@ -130,9 +178,28 @@ class StreamingPipeline:
         endpoint_safety_cap_ms: int = 900,
         endpoint_short_utterance_ms: int = 1500,
         min_speech_duration_ms: int = 500,
+        phase2: bool = False,
+        phase3: bool = False,
+        # Phase 4: cadence-1 "utterance complete" endpoint authority on its own
+        # (the shorter turn-commit lane) without Phase-3's barge authority.
+        # Fail-closed: off by default.
+        phase4: bool = False,
+        # Phase 5: complexity-routing gate (trivial-ack LLM-skip) on its own.
+        # Fail-closed: off by default.
+        phase5: bool = False,
+        # Independent of the Laya phases: the deterministic fast-action table
+        # (canned phatics + templated time/date/calc). ``None`` keeps the
+        # legacy coupling (fast-path lives under Phase-2); an explicit bool
+        # decouples the two so the fast table can serve replies with Laya
+        # fully shadowed.
+        fast_path: bool | None = None,
+        # Latency Step-1: prefetch a confident tool result from the live
+        # partial so the LLM's first prompt already carries the data.
+        tool_prefetch: bool = False,
     ) -> None:
         self.stt = stt
         self.llm = llm
+        self.llm_fallback = llm_fallback
         self.tts = tts
         if (
             use_hysteresis_vad
@@ -156,8 +223,24 @@ class StreamingPipeline:
         )
         self._prosody = ProsodySelector()
         self._emotion = emotion_classifier or EmotionClassifier(enabled=False)
+        self._s1 = system1 or LayaSystem1(enabled=False)
+        # Phase-2 routing switches (see _fast_reply / _llm_for).
+        self._phase2 = phase2
+        # Phase-3 endpoint/barge switches (see _cadence1_probe consumers).
+        self._phase3 = phase3
+        # Phase-4 endpoint-only switch: the same signed-off endpoint authority
+        # as Phase-3, but without barge enforcement (see _cadence1_probe).
+        self._phase4 = phase4
+        # Phase-5 complexity-routing gate (trivial-ack LLM-skip, see _ack_phrase).
+        self._phase5 = phase5
+        # Deterministic fast-path, decoupled from the Laya phases (see above).
+        self._fast_path = bool(phase2) if fast_path is None else bool(fast_path)
+        # Latency Step-1 live-listening tool prefetch (see _prefetch_probe).
+        self._tool_prefetch = tool_prefetch
         self._topic_trackers: dict[str, TopicTracker] = {}
         self._topic_label_tasks: dict[str, asyncio.Task] = {}
+        # Shadow-only turn-level Laya passes (held so they aren't GC'd).
+        self._s1_bg_tasks: set[asyncio.Task] = set()
         self._compression_tasks: dict[str, asyncio.Task] = {}
         self.compressor = ContextCompressor()
         self.compress_at_tokens = 1500
@@ -184,6 +267,7 @@ class StreamingPipeline:
         self._echo_floor: dict[str, float] = {}
         self._speaking: dict[str, bool] = {}
         self._last_spoken: dict[str, str] = {}
+        self._speaking_text: dict[str, str] = {}
         self._speech_buffers: dict[str, bytearray] = {}
         self._frame_buffers: dict[str, bytearray] = {}
         self._silence_ms: dict[str, float] = {}
@@ -191,9 +275,34 @@ class StreamingPipeline:
         self._last_partial_time: dict[str, float] = {}
         self._last_refresh_ms: dict[str, float] = {}
         self._partial_inflight: dict[str, bool] = {}
+        # Cadence-1 System-1 state: latest probe result per session and a
+        # guard so overlapping partial cadences never stack Laya inferences.
+        self._s1_cadence1: dict[str, dict] = {}
+        self._s1_c1_inflight: dict[str, bool] = {}
+        # Latency Step-1 tool prefetch: latest stashed result per session, its
+        # in-flight guard, and the background task (cancelled at speech-end so
+        # it never contends with the reply for the GPU).
+        self._s1_prefetch: dict[str, dict] = {}
+        # Outcome labels for Laya training (what actually happened, not what
+        # a classifier guessed): partials heard during the current utterance,
+        # the tools each turn really used, and turn rows awaiting that outcome.
+        self._utt_partials: dict[str, list[str]] = {}
+        self._turn_outcomes: dict[str, dict] = {}
+        self._pending_turn_rows: dict[str, dict] = {}
+        self._s1_prefetch_inflight: dict[str, bool] = {}
+        self._s1_prefetch_tasks: dict[str, asyncio.Task] = {}
+        # Monotonic timestamps of the last SPEECH_END emit, for the true
+        # end-to-end "user stopped talking -> first audio out" metric.
+        self._speech_end_ts: dict[str, float] = {}
         self._barge_pending: dict[str, bool] = {}
+        self._barge_rejects: dict[str, float] = {}
         self._barge_thresholds: dict[str, float] = {}
         self._barge_frames: dict[str, int] = {}
+        # Soft-barge content lane state: cached background probe result, its
+        # in-flight guard, and the sustained soft-frame counter.
+        self._barge_probe_cache: dict[str, tuple[str, float]] = {}
+        self._barge_probe_inflight: dict[str, bool] = {}
+        self._barge_soft_frames: dict[str, int] = {}
         self._low_energy_frames: dict[str, int] = {}
         self._interrupt_handlers: dict[str, InterruptHandler] = {}
         self._generations: dict[str, int] = {}
@@ -284,6 +393,12 @@ class StreamingPipeline:
         self._barge_pending.clear()
         self._barge_thresholds.clear()
         self._barge_frames.clear()
+        for task in self._s1_bg_tasks:
+            task.cancel()
+        self._s1_bg_tasks.clear()
+        self._barge_probe_cache.clear()
+        self._barge_probe_inflight.clear()
+        self._barge_soft_frames.clear()
         self._low_energy_frames.clear()
         self._interrupt_handlers.clear()
         logger.info("pipeline stopped")
@@ -348,6 +463,7 @@ class StreamingPipeline:
         self._echo_floor.pop(session_id, None)
         self._speaking.pop(session_id, None)
         self._speech_buffers.pop(session_id, None)
+        self._speaking_text.pop(session_id, None)
         self._frame_buffers.pop(session_id, None)
         self._silence_ms.pop(session_id, None)
         self._speech_ms.pop(session_id, None)
@@ -355,8 +471,12 @@ class StreamingPipeline:
         self._last_refresh_ms.pop(session_id, None)
         self._partial_inflight.pop(session_id, None)
         self._barge_pending.pop(session_id, None)
+        self._barge_rejects.pop(session_id, None)
         self._barge_thresholds.pop(session_id, None)
         self._barge_frames.pop(session_id, None)
+        self._barge_probe_cache.pop(session_id, None)
+        self._barge_probe_inflight.pop(session_id, None)
+        self._barge_soft_frames.pop(session_id, None)
         self._low_energy_frames.pop(session_id, None)
         self._interrupt_handlers.pop(session_id, None)
         clear_task = self._playback_clear_tasks.pop(session_id, None)
@@ -658,6 +778,21 @@ class StreamingPipeline:
                         self._barge_frames[sid] = target_frames
                         self._interrupt_handler(sid).reset()
                         await self._maybe_fire_barge(sid, ctx, frame_energy)
+                    # A fresh utterance: no cadence-1 verdict or soft-barge
+                    # context survives from the turn that just ended, otherwise
+                    # a stale System-1 result (or an unresolved buffer probe)
+                    # could barge the new turn's speech.
+                    self._s1_cadence1.pop(sid, None)
+                    self._barge_probe_cache.pop(sid, None)
+                    self._barge_soft_frames.pop(sid, None)
+                    # Same for any tool prefetch stashed for the previous
+                    # utterance: its generation tag would be stale and an
+                    # in-flight Laya probe only steals GPU in a reply window.
+                    self._s1_prefetch.pop(sid, None)
+                    self._s1_prefetch_inflight.pop(sid, None)
+                    pf = self._s1_prefetch_tasks.pop(sid, None)
+                    if pf and not pf.done():
+                        pf.cancel()
                     self._speaking[sid] = True
                     ctx.dialogue_state = DialogueState.LISTENING
                     self._silence_ms[sid] = 0.0
@@ -727,6 +862,26 @@ class StreamingPipeline:
                             logger.debug(
                                 f"barge-in candidate session={sid} energy={energy:.3f}"
                                 f" threshold={threshold:.3f}"
+                            )
+                        elif (
+                            playback_on
+                            and energy
+                            > self.interrupt_handler.speech_energy_threshold
+                            and time.time()
+                            - self._barge_rejects.get(sid, 0.0)
+                            > 1.0
+                        ):
+                            # Below the echo-raised floor but above a real
+                            # speaking level: hold a content-checked candidate
+                            # so _maybe_fire_barge can decide by probing the
+                            # buffered speech instead of by raw gain alone.
+                            self._barge_pending[sid] = True
+                            self._barge_thresholds[sid] = threshold
+                            self._barge_frames[sid] = target_frames
+                            self._interrupt_handler(sid).reset()
+                            logger.debug(
+                                f"barge-in soft candidate session={sid}"
+                                f" energy={energy:.3f} raised={threshold:.3f}"
                             )
                     if self._barge_pending.get(sid, False):
                         await self._maybe_fire_barge(sid, ctx, energy)
@@ -830,6 +985,31 @@ class StreamingPipeline:
                         # Clearly completed short utterance - respond briskly.
                         endpoint_ms = self.endpoint_short_ms
 
+                    # Phase-4 cadence-1 endpoint authority: once a fresh,
+                    # confident probe exists, Laya's verdict decides the
+                    # "utterance already complete -> respond briskly" lane and
+                    # the legacy mid-list/rising-trajectory signals no longer
+                    # veto it (they remain the primary path only before a
+                    # verdict exists / in the pre-probe window). The verdict is
+                    # only honored while ``ctx's`` partial still matches the
+                    # text it was computed on -- a sync refresh that extends
+                    # the partial (e.g. list continuation) demotes to the
+                    # legacy lanes until the next probe lands. The min-speech +
+                    # safety-cap guards below remain hard bounds.
+                    c1 = self._s1_cadence1.get(sid)
+                    if (
+                        (self._phase3 or self._phase4)
+                        and c1 is not None
+                        and c1.get("generation") == self._generation(sid)
+                        and (time.monotonic() - c1.get("ts", 0.0)) <= _C1_FRESH_S
+                        and c1.get("turn_complete") is not None
+                        and c1.get("turn_complete") >= _C1_ACT_PROB
+                        and c1.get("completion_conf") is not None
+                        and c1.get("completion_conf") >= _C1_SCORE_REQ
+                        and c1.get("partial") == ctx.last_partial_transcript
+                    ):
+                        endpoint_ms = self.endpoint_short_ms
+
                     # Safety cap: never wait longer than this so long pauses
                     # don't feel sluggish.
                     endpoint_ms = min(endpoint_ms, self.endpoint_safety_cap_ms)
@@ -856,7 +1036,16 @@ class StreamingPipeline:
                         ctx.turn_count += 1
                         ctx.dialogue_state = DialogueState.PROCESSING
 
+                        self._speech_end_ts[sid] = time.perf_counter()
                         await self._emit(PipelineEvent.SPEECH_END, session_id=sid)
+                        # The latency Step-1 prefetch fought for the GPU during
+                        # listening; at speech-end it must never keep holding it
+                        # while the reply needs it. Cancel the in-flight probe:
+                        # whatever it already stashed is consumed by the turn.
+                        pf = self._s1_prefetch_tasks.pop(sid, None)
+                        if pf and not pf.done():
+                            pf.cancel()
+                        self._s1_prefetch_inflight.pop(sid, None)
                         asyncio.create_task(
                             self._process_speech_segment(audio_blob, sid, ctx)
                         )
@@ -894,11 +1083,56 @@ class StreamingPipeline:
         words = [w for w in transcript.split() if any(ch.isalpha() for ch in w)]
         return not words
 
+    def _barge_echo_match(self, probe: str, session_id: str) -> bool:
+        """True when a barge probe transcript looks like the sentence the
+        assistant is currently speaking, i.e. speaker bleed bleeding back into
+        the mic rather than a genuine user interruption."""
+        words = [w for w in probe.lower().split() if len(w) >= 2]
+        if len(words) < 2:
+            return False
+        spoken_words = {
+            w for w in self._speaking_text.get(session_id, "").lower().split()
+            if len(w) >= 2
+        }
+        if not spoken_words:
+            return False
+        overlap = len(set(words) & spoken_words) / len(words)
+        return overlap >= ECHO_OVERLAP_RATIO
+
     async def _maybe_fire_barge(
         self, sid: str, ctx: ConversationContext, energy: float
     ) -> None:
         if not self._barge_pending.get(sid, False):
+            self._barge_soft_frames.pop(sid, None)
             return
+
+        # Phase-3 cadence-1 gate: a fresh, sufficiently-confident System-1
+        # verdict is the primary barge authority (backchannel keeps the
+        # response going, disagreement cancels immediately). The legacy lexical
+        # + energy-floor paths below still apply when the probe is absent or
+        # stale, or when this flag is off. The verdict is only trusted when it
+        # was computed for the CURRENT utterance: the generation tag is stamped
+        # by _cadence1_probe, so a leftover from the user's previous turn can
+        # never gate this one.
+        c1 = self._s1_cadence1.get(sid)
+        if (
+            self._phase3
+            and c1 is not None
+            and c1.get("generation") == self._generation(sid)
+            and (time.monotonic() - c1.get("ts", 0.0)) <= _C1_FRESH_S
+        ):
+            bt = c1.get("barge_type")
+            if bt == "backchannel":
+                # Conversational feedback: keep the response going regardless
+                # of accumulated speech frames/energy.
+                self._keep_barge(sid)
+                return
+            if bt == "disagreement":
+                # Firm interrupt: cancel immediately. Matches the legacy lexical
+                # disagreement behavior but without waiting for a partial.
+                self._barge_soft_frames.pop(sid, None)
+                await self._do_interrupt(sid, ctx)
+                return
 
         # Lexical gate: if a partial transcript is already available, decide
         # from its content whether this speech is a genuine interruption.
@@ -908,21 +1142,13 @@ class StreamingPipeline:
             if lexical == "backchannel":
                 # Conversational feedback ("yeah", "uh-huh", "right", "okay")
                 # should NOT cancel our response. Keep the response going.
-                self._barge_pending[sid] = False
-                self._barge_thresholds.pop(sid, None)
-                self._barge_frames.pop(sid, None)
-                self._interrupt_handler(sid).reset()
+                self._keep_barge(sid)
                 return
             if lexical == "disagreement":
                 # Firm interruption ("no", "stop", "wait", "that's wrong"):
                 # cancel immediately regardless of accumulated speech frames.
-                self._barge_pending[sid] = False
-                self._barge_thresholds.pop(sid, None)
-                self._barge_frames.pop(sid, None)
-                self._interrupt_handler(sid).reset()
-                await self.signal_interrupt(sid)
-                ctx.dialogue_state = DialogueState.LISTENING
-                await self._emit(PipelineEvent.INTERRUPT, session_id=sid)
+                self._barge_soft_frames.pop(sid, None)
+                await self._do_interrupt(sid, ctx)
                 return
 
         handler = self._interrupt_handler(sid)
@@ -932,48 +1158,195 @@ class StreamingPipeline:
         target_frames = self._barge_frames.get(
             sid, self.interrupt_handler.consecutive_speech_frames
         )
+        base_threshold = self.interrupt_handler.speech_energy_threshold
         if self._playback_active.get(sid, False):
             threshold = max(
                 threshold, self._echo_floor.get(sid, 0.0) * ECHO_FLOOR_MARGIN
             )
-        if handler.should_interrupt(
+        fast = handler.should_interrupt(
             energy, 0.0, True, threshold=threshold, target_frames=target_frames
-        ):
-            # Before committing to an interrupt during playback, classify the
-            # current speech. The periodic partial transcript is rate-limited
-            # (~1s), so short backchannels reach this point before any partial
-            # exists; probe the buffer directly so conversational feedback
-            # like "yeah", "uh-huh" or "right" doesn't cancel our response.
-            if self._playback_active.get(sid, False):
-                buf = self._speech_buffers.get(sid)
-                probe = ""
-                if buf:
-                    try:
-                        probe = (
-                            await self._partial_transcribe(
-                                bytes(buf), sid, ctx, sync=True
-                            )
-                            or ""
-                        )
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(f"barge classify probe failed: {e}")
-                if probe and BackchannelInterrupt.is_backchannel(probe):
-                    self._barge_pending[sid] = False
-                    self._barge_thresholds.pop(sid, None)
-                    self._barge_frames.pop(sid, None)
-                    self._interrupt_handler(sid).reset()
+        )
+        # Soft candidate: below the raised (echo-aware) floor but above a real
+        # speaking level while we're playing back. Raw gain can't separate the
+        # user's voice from speaker bleed, so this path decides by CONTENT:
+        # it probes the buffered speech and only interrupts on novel,
+        # non-backchannel words.
+        soft = (
+            self._playback_active.get(sid, False)
+            and not fast
+            and energy > base_threshold
+        )
+        if not (fast or soft):
+            # A frame below both lanes breaks the run: soft frames must be
+            # consecutive, not accumulated across scattered noise.
+            self._barge_soft_frames.pop(sid, None)
+            return
+
+        # Sustained-frame gate for the soft lane: a single blurred frame must
+        # not cancel the response, so at least _SOFT_BARGE_MIN_FRAMES frames
+        # have to exist at soft level before any content check can fire an
+        # interrupt. (The fast lane is loud enough to be authoritative on one
+        # frame, as before.)
+        if soft:
+            self._barge_soft_frames[sid] = self._barge_soft_frames.get(sid, 0) + 1
+            if self._barge_soft_frames[sid] < _SOFT_BARGE_MIN_FRAMES:
+                return
+        else:
+            self._barge_soft_frames.pop(sid, None)
+
+        # Before committing to an interrupt during playback, classify the
+        # current speech. The periodic partial transcript is rate-limited
+        # (~1s), so short backchannels reach this point before any partial
+        # exists; probe the buffer directly so conversational feedback
+        # ("yeah", "uh-huh", "right") doesn't cancel our response. Full STT
+        # on the growing buffer is expensive, so the probe runs in a
+        # background task (never in the 128ms audio loop), rate-limited and
+        # cached; the frame path only ever reads that cache.
+        if self._playback_active.get(sid, False):
+            now = time.monotonic()
+            probe, probe_ts = self._barge_probe_cache.get(sid, ("", 0.0))
+            if (now - probe_ts) >= _BARGE_PROBE_INTERVAL_S:
+                if not self._barge_probe_inflight.get(sid, False):
+                    self._barge_probe_inflight[sid] = True
+                    asyncio.create_task(
+                        self._barge_probe_and_decide(sid, ctx, soft=soft)
+                    )
+                # The soft lane's verdict belongs to the content probe: until
+                # it has resolved, hold the interrupt rather than deciding on
+                # blurred energy alone.
+                if soft:
                     return
-            self._barge_pending[sid] = False
-            self._barge_thresholds.pop(sid, None)
-            self._barge_frames.pop(sid, None)
-            await self.signal_interrupt(sid)
-            ctx.dialogue_state = DialogueState.LISTENING
-            await self._emit(PipelineEvent.INTERRUPT, session_id=sid)
+                probe, probe_ts = self._barge_probe_cache.get(sid, ("", 0.0))
+            if probe:
+                if BackchannelInterrupt.is_backchannel(probe):
+                    self._keep_barge(sid)
+                    logger.info(f"barge kept (backchannel {probe!r}) session={sid}")
+                    return
+                if soft and self._barge_echo_match(probe, sid):
+                    self._keep_barge(sid)
+                    logger.info(
+                        f"barge kept (echo of spoken text {probe!r}) session={sid}"
+                    )
+                    return
+            elif soft:
+                # Empty transcript: nothing to classify yet. Only the
+                # background probe cycle may decide this lane; a frame path
+                # interrupted on silence would cancel the assistant for echo.
+                return
+        await self._do_interrupt(sid, ctx)
+
+    async def _probe_barge_buffer(
+        self, sid: str, ctx: ConversationContext
+    ) -> str:
+        """Transcribe the current speech buffer for a barge content probe."""
+        buf = self._speech_buffers.get(sid)
+        if not buf:
+            return ""
+        try:
+            text = await self._partial_transcribe(bytes(buf), sid, ctx, sync=True)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"barge classify probe failed: {e}")
+            return ""
+        return text or ""
+
+    async def _barge_probe_and_decide(
+        self,
+        sid: str,
+        ctx: ConversationContext,
+        *,
+        soft: bool = False,
+    ) -> None:
+        """Background full-STT probe of the growing speech buffer, cached so
+        the audio loop never blocks on transcription. After caching it resolves
+        the pending barge from content; a soft lane with nothing to classify
+        yet re-probes the (grown) buffer a few times before handing back so the
+        frame path can pace the next cycle."""
+        probe = await self._probe_barge_buffer(sid, ctx)
+        self._barge_probe_cache[sid] = (probe, time.monotonic())
+        try:
+            for _ in range(_SOFT_BARGE_PROBE_ATTEMPTS):
+                if not await self._decide_contents_barge(sid, ctx, probe, soft=soft):
+                    return
+                probe = await self._probe_barge_buffer(sid, ctx)
+                self._barge_probe_cache[sid] = (probe, time.monotonic())
+        finally:
+            self._barge_probe_inflight.pop(sid, None)
+
+    async def _decide_contents_barge(
+        self,
+        sid: str,
+        ctx: ConversationContext,
+        probe: str,
+        *,
+        soft: bool = False,
+    ) -> bool:
+        """Content decision for a barge candidate once a buffer probe exists.
+        Backchannels and speaker bleed keep the response; genuinely novel
+        speech interrupts. The soft lane (below the echo-raised floor) only
+        ever interrupts on content: until the transcript is non-empty (and
+        enough frames have sustained the candidate) it returns True so the
+        caller re-probes the grown buffer instead of committing.
+        """
+        if not self._barge_pending.get(sid, False):
+            return False
+        if soft:
+            if self._barge_soft_frames.get(sid, 0) < _SOFT_BARGE_MIN_FRAMES:
+                return True
+            if not probe:
+                return True
+        if self._playback_active.get(sid, False) and probe:
+            if BackchannelInterrupt.is_backchannel(probe):
+                self._keep_barge(sid)
+                logger.info(f"barge kept (backchannel {probe!r}) session={sid}")
+                return False
+            if soft and self._barge_echo_match(probe, sid):
+                self._keep_barge(sid)
+                logger.info(
+                    f"barge kept (echo of spoken text {probe!r}) session={sid}"
+                )
+                return False
+        await self._do_interrupt(sid, ctx)
+        return False
+
+    def _keep_barge(self, sid: str) -> None:
+        """Non-interrupt resolution: backchannel/echo keeps the response."""
+        self._barge_rejects[sid] = time.time()
+        self._barge_pending[sid] = False
+        self._barge_thresholds.pop(sid, None)
+        self._barge_frames.pop(sid, None)
+        self._barge_soft_frames.pop(sid, None)
+        self._interrupt_handler(sid).reset()
+
+    async def _do_interrupt(self, sid: str, ctx: ConversationContext) -> None:
+        """Barge decision committed: cancel playback and return to listening."""
+        self._barge_pending[sid] = False
+        self._barge_thresholds.pop(sid, None)
+        self._barge_frames.pop(sid, None)
+        self._barge_soft_frames.pop(sid, None)
+        self._interrupt_handler(sid).reset()
+        await self.signal_interrupt(sid)
+        ctx.dialogue_state = DialogueState.LISTENING
+        await self._emit(PipelineEvent.INTERRUPT, session_id=sid)
 
     async def _process_speech_segment(
         self, audio_blob: bytes, session_id: str, ctx: ConversationContext
     ) -> None:
         prev = self._current_tasks.get(session_id)
+        # Latency Step-1: take any tool prefetch that was stashed while the
+        # user was speaking. Must run BEFORE the generation bump below so the
+        # probe's generation tag (stamped during listening) still matches this
+        # turn; anything stale or absent is simply dropped. The cache is always
+        # cleared so a future turn can never reuse an old tool answer.
+        prefetch = self._consume_prefetch(session_id)
+        # Per-turn context is only valid for the segment that produced it.
+        # Without this reset, an urgent/escalated/locked decision from one turn
+        # silently bleeds into every later turn: the assistant stays on the
+        # fallback model, skips turn delays, and refuses to re-evaluate query
+        # complexity hours after the original request.
+        ctx.urgent = False
+        ctx.model_tier = "primary"
+        ctx.complexity_locked = False
+        ctx.sentiment_locked = False
         # During playback, classify the incoming segment so conversational
         # backchannels ("yeah", "uh-huh", "right") don't cancel the assistant's
         # response mid-playback.
@@ -1007,6 +1380,8 @@ class StreamingPipeline:
                 clear_task.cancel()
             await self._emit(PipelineEvent.INTERRUPT, session_id=session_id)
         self._bump_generation(session_id)
+        turn_gen = self._generation(session_id)
+        utt_partials = self._utt_partials.pop(session_id, [])
         int_ev = self._int_event(session_id)
         int_ev.clear()
         self._current_tasks[session_id] = asyncio.current_task()
@@ -1035,6 +1410,7 @@ class StreamingPipeline:
                     facts=self._facts.get(session_id),
                     session_id=session_id,
                     user_repeated=ctx.user_repeated,
+                    prefetch=self._prefetch_for(prefetch, partial),
                 )
 
                 async def _spec_llm():
@@ -1106,9 +1482,73 @@ class StreamingPipeline:
             else:
                 ctx.engagement = max(0.1, ctx.engagement - 0.02)
 
-            # Check if speculative LLM result can be reused
+            self._log_endpoint_labels(
+                session_id, utt_partials, transcript, ctx.turn_count
+            )
+
+            # Phase-2/5: turn-level System-1 pass. Rows are always shadow-logged;
+            # context overrides are applied only when TASA_LAYA_PHASE2=1 -- or
+            # when TASA_LAYA_PHASE5=1 AND the utterance is shaped like a bare
+            # acknowledgment (a routing decision can't wait on a background
+            # verdict, so the gate's synchronous pass only ever runs for those
+            # few ack-shaped turns). This runs after every legacy classifier has
+            # populated ctx, so a weak or missing Laya answer silently keeps the
+            # legacy value (fail-open).
+            phase5_sync = self._phase5 and self._ack_phrase(transcript) is not None
+            if self._phase2 or phase5_sync:
+                await self._shadow_cadence2(session_id, transcript, ctx)
+            elif self._s1.enabled:
+                # Shadow-only: answers are just logged, so the reply must not
+                # wait for them.
+                task = asyncio.create_task(
+                    self._shadow_cadence2(session_id, transcript, ctx)
+                )
+                self._s1_bg_tasks.add(task)
+                task.add_done_callback(self._s1_bg_tasks.discard)
+
+            # Conservative LLM-skip: only when the deterministic fast-action
+            # table yields a ready answer. A miss forces invoke_llm=True, so an
+            # "LLM-skip" can never mean "no reply". The table is pure rule
+            # matching with no GPU cost, so it is decoupled from the Laya
+            # phases -- if the phase flags are off but TASA_FAST_PATH is on
+            # (the normal deployed configuration), canned phatics and templated
+            # tool replies still answer instantly.
+            fast_reply: str | None = None
+            fast_tools: list[str] = []
+            if self._fast_path:
+                fast_reply = await self._fast_reply(transcript, ctx, fast_tools)
+            # Phase-5 complexity-routing gate (fail-open, off by default): a
+            # bare acknowledgment is answered deterministically instead of the
+            # LLM only when a confident Laya verdict marks it trivial (simple +
+            # not a question), it isn't urgent, and no escalation routed to the
+            # fallback model. Any weak/missing verdict keeps the LLM.
+            if (
+                fast_reply is None
+                and self._phase5
+                and ctx.complexity_locked
+                and ctx.query_complexity == "simple"
+                and not ctx.is_question
+                and not ctx.urgent
+                and ctx.model_tier == "primary"
+            ):
+                ack = self._ack_phrase(transcript)
+                if ack is not None:
+                    fast_reply = ack
+            if fast_reply is not None:
+                self._record_turn_tools(session_id, turn_gen, fast_tools)
+            ctx.fast_path = fast_reply is not None
+            ctx.invoke_llm = fast_reply is None
+
+            # Check if speculative LLM result can be reused. The shadow
+            # (escalated) model can quickly vote to route this utterance off
+            # the fast path, so never reuse speculation when it does: the
+            # fallback model must produce this answer itself.
             used_speculation = False
-            can_reuse_speculation = ctx.intent != "correction"
+            can_reuse_speculation = (
+                ctx.intent != "correction"
+                and fast_reply is None
+                and ctx.model_tier != "fallback"
+            )
             if (
                 can_reuse_speculation
                 and spec_task
@@ -1133,12 +1573,14 @@ class StreamingPipeline:
                 if spec_task and not spec_task.done():
                     spec_task.cancel()
 
-                messages = await self._build_messages(
-                    transcript, ctx, memory, retrieval,
-                    facts=self._facts.get(session_id),
-                    session_id=session_id,
-                    user_repeated=ctx.user_repeated,
-                )
+                if fast_reply is None:
+                    messages = await self._build_messages(
+                        transcript, ctx, memory, retrieval,
+                        facts=self._facts.get(session_id),
+                        session_id=session_id,
+                        user_repeated=ctx.user_repeated,
+                        prefetch=self._prefetch_for(prefetch, transcript),
+                    )
 
             if memory:
                 memory.add("user", transcript)
@@ -1152,25 +1594,31 @@ class StreamingPipeline:
             if int_ev.is_set():
                 return
 
-            # Compute response timing delay
-            delay = self.turn_timing.compute_delay(
-                pause_duration=ctx.last_turn_duration_ms / 1000,
-                engagement_score=ctx.engagement,
-                turn_duration_ms=ctx.last_turn_duration_ms,
-                is_question=ctx.is_question,
-                is_backchannel=False,
-            )
-            if delay > 0.1:
-                await self._emit(
-                    PipelineEvent.RESPONSE_DELAY, str(round(delay, 2)), session_id
+            # Compute response timing delay. Fast replies and urgent turns
+            # answer immediately (urgency is a latency modifier, not a
+            # business decision).
+            if fast_reply is None and not ctx.urgent:
+                delay = self.turn_timing.compute_delay(
+                    pause_duration=ctx.last_turn_duration_ms / 1000,
+                    engagement_score=ctx.engagement,
+                    turn_duration_ms=ctx.last_turn_duration_ms,
+                    is_question=ctx.is_question,
+                    is_backchannel=False,
                 )
-                await asyncio.sleep(delay)
-                if int_ev.is_set():
-                    return
+                if delay > 0.1:
+                    await self._emit(
+                        PipelineEvent.RESPONSE_DELAY, str(round(delay, 2)), session_id
+                    )
+                    await asyncio.sleep(delay)
+                    if int_ev.is_set():
+                        return
 
             # Let the emotion classifier finish concurrently (0.5s cap);
             # the lexicon fallback already set above wins on timeout/error.
-            if emotion_task:
+            # Fast replies skip this wait: enjoy the low latency. A confident
+            # Laya sentiment (Phase-2) already decided, so don't wait to
+            # overwrite it either.
+            if emotion_task and fast_reply is None and not ctx.sentiment_locked:
                 try:
                     ctx.user_sentiment = await asyncio.wait_for(
                         asyncio.shield(emotion_task),
@@ -1243,7 +1691,17 @@ class StreamingPipeline:
                 EntityGate.extract_entities(transcript)
             )
 
-            if used_speculation:
+            if fast_reply is not None:
+                # Deterministic fast reply: no LLM call, straight to TTS.
+                full = fast_reply
+                ctx.dialogue_state = DialogueState.INTERRUPTIBLE
+                await self._emit(PipelineEvent.LLM_TOKEN, full, session_id)
+                for c in chunker.feed(full):
+                    push_nowait(1, self._tool_registry.strip_calls(c))
+                tail = chunker.flush()
+                if tail:
+                    push_nowait(1, self._tool_registry.strip_calls(tail))
+            elif used_speculation:
                 full = spec_full or ""
                 ctx.dialogue_state = DialogueState.INTERRUPTIBLE
                 stripped = self._tool_registry.strip_calls(full)
@@ -1263,13 +1721,15 @@ class StreamingPipeline:
                 first_token = True
                 tool_marker_seen = False
 
-                bc_timer = asyncio.create_task(
-                    self._backchannel_timer(
-                        text_queue, ctx, session_id, int_ev, seq
+                bc_timer = None
+                if not ctx.urgent:
+                    bc_timer = asyncio.create_task(
+                        self._backchannel_timer(
+                            text_queue, ctx, session_id, int_ev, seq
+                        )
                     )
-                )
 
-                async for token in self.llm.generate_stream(messages):
+                async for token in self._llm_for(ctx).generate_stream(messages):
                     if int_ev.is_set():
                         break
                     if first_token:
@@ -1306,6 +1766,11 @@ class StreamingPipeline:
                 self._log_latency("llm_full")
 
                 tool_calls = self._tool_registry.find_calls(full)
+
+            if fast_reply is None and not int_ev.is_set():
+                self._record_turn_tools(
+                    session_id, turn_gen, [c.get("name", "") for c in tool_calls]
+                )
 
             # ---- Tool call handling: stop speech, execute, stream followup ----
             if tool_calls and not int_ev.is_set():
@@ -1374,7 +1839,9 @@ class StreamingPipeline:
 
                     llm_start = time.perf_counter()
                     first_token = True
-                    async for token in self.llm.generate_stream(followup_messages):
+                    async for token in self._llm_for(ctx).generate_stream(
+                        followup_messages
+                    ):
                         if int_ev.is_set():
                             break
                         if first_token:
@@ -1482,6 +1949,10 @@ class StreamingPipeline:
             if self._current_tasks.get(session_id) is asyncio.current_task():
                 self._current_tasks.pop(session_id, None)
             self._tts_workers.pop(session_id, None)
+            pending = self._pending_turn_rows.get(session_id)
+            if pending and pending["gen"] == turn_gen:
+                self._pending_turn_rows.pop(session_id, None)
+                self._s1.log_shadow(**pending["log"])
 
     @staticmethod
     async def _drain_queue(queue: asyncio.Queue) -> None:
@@ -1556,6 +2027,7 @@ class StreamingPipeline:
                     await self._drain_queue(text_queue)
                     break
                 spoken.append(text)
+                self._speaking_text[session_id] = " ".join(spoken)
 
                 try:
                     async for audio_chunk in self.tts.synthesize_stream(
@@ -1570,6 +2042,11 @@ class StreamingPipeline:
                                 if eos_ts is not None:
                                     self._latency.measure("tts_first", eos_ts)
                                     self._log_latency("tts_first")
+                                anchor = self._speech_end_ts.get(session_id) or eos_ts
+                                if anchor is not None:
+                                    self._latency.measure("e2e_reply", anchor)
+                                    self._log_latency("e2e_reply")
+                                self._speech_end_ts.pop(session_id, None)
                                 self._playback_onset[session_id] = first_emit
                                 self._echo_floor.setdefault(session_id, 0.0)
                                 meta = self._prosody_meta.get(
@@ -1634,7 +2111,43 @@ class StreamingPipeline:
             text = await self.stt.transcribe(audio_blob)
             if text and text != ctx.last_partial_transcript:
                 ctx.last_partial_transcript = text
+                if self._s1.enabled:
+                    heard = self._utt_partials.setdefault(session_id, [])
+                    if len(heard) < 30:
+                        heard.append(text)
                 await self._emit(PipelineEvent.PARTIAL_TRANSCRIPT, text, session_id)
+                if not sync:
+                    # Cadence-1 live-listening verdicts are consumed ONLY by the
+                    # Phase-3 endpoint/barge paths and the Phase-4 endpoint-only
+                    # path, so skip the per-partial Laya round-trip entirely when
+                    # both are off -- otherwise every partial shares the GPU with
+                    # a reply for a verdict nobody reads (the single largest Laya
+                    # latency cost in the common shadow deployment).
+                    if (
+                        (self._phase3 or self._phase4)
+                        and not self._s1_c1_inflight.get(session_id, False)
+                    ):
+                        self._s1_c1_inflight[session_id] = True
+                        asyncio.create_task(
+                            self._cadence1_probe(text, session_id)
+                        )
+
+                    # Latency Step-1: while the user is still talking, ask Laya
+                    # only the tool decision and (on a confident hit) execute
+                    # the tool once, stashing the result so the LLM's first
+                    # prompt already carries it. Runs at most once per partial
+                    # change and never in parallel with a cadence-1 probe; the
+                    # task is cancelled at speech-end.
+                    if (
+                        self._tool_prefetch
+                        and not self._s1_prefetch_inflight.get(session_id, False)
+                        and not self._s1_c1_inflight.get(session_id, False)
+                    ):
+                        self._s1_prefetch_inflight[session_id] = True
+                        task = asyncio.create_task(
+                            self._prefetch_probe(text, session_id)
+                        )
+                        self._s1_prefetch_tasks[session_id] = task
                 return text
             if sync:
                 return text or None
@@ -1671,6 +2184,664 @@ class StreamingPipeline:
             return "complex"
 
         return "standard"
+
+    async def _shadow_cadence2(
+        self, session_id: str, transcript: str, ctx: ConversationContext
+    ) -> None:
+        """Run the cadence-2 (turn-level) Laya pass.
+
+        Always shadow-logs Laya-vs-legacy rows for telemetry/calibration. When
+        Phase-2 is enabled (``TASA_LAYA_PHASE2=1``) the confident answers also
+        override legacy classifier output directly on ``ctx``. Fails open: any
+        error, timeout, or low-confidence answer keeps today's behavior.
+        """
+        s1 = self._s1
+        if not s1.enabled:
+            return
+        gen = self._generation(session_id)
+
+        state = {
+            "transcript": transcript,
+            "prev_intent": ctx.prev_intent,
+            "turn_count": ctx.turn_count,
+            "topic": ctx.topic,
+            "last_transcript": ctx.last_transcript,
+        }
+        # Snapshot legacy values first: in shadow-only mode this runs in the
+        # background while the turn keeps mutating ctx.
+        legacy_intent = ctx.intent
+        legacy_is_question = ctx.is_question
+        legacy_sentiment = ctx.user_sentiment
+        legacy_complexity = self._classify_query_complexity(transcript)
+        legacy_topic_shift = ctx.topic_shift
+        legacy_verify = EntityGate.query_needs_verification(transcript)
+
+        if self._phase2 or self._phase5:
+            # Enforcement (Phase-2 routing / Phase-5 ack-gate): synchronous
+            # path -- we are already inside the reply path and must not wait
+            # for the turn task to finish.
+            pass
+        else:
+            # Shadow-only telemetry: the reply owns the GPU right now, so never
+            # steal it for a pass that only logs rows. Wait until the current
+            # turn task has fully wrapped up before running the Laya forward
+            # pass. The state + legacy snapshot above was taken at call time, so
+            # a later turn mutating ctx cannot skew these rows.
+            current = self._current_tasks.get(session_id)
+            if (
+                current is not None
+                and current is not asyncio.current_task()
+                and not current.done()
+            ):
+                try:
+                    await asyncio.shield(current)
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+        start = time.perf_counter()
+        answers = await s1.predict(state, TURN_QUESTIONS)
+        self._latency.measure("laya_s1", start)
+        if not answers:
+            return
+        self._log_latency("laya_s1")
+
+        def _noul(q: str) -> float | None:
+            return s1.noul_prob(answers, q)
+
+        rows: list[dict] = []
+
+        def _cmp(q, laya_value, legacy, use_prob: bool = False):
+            entry = answers.get(q) if isinstance(answers.get(q), dict) else {}
+            if "noul" in entry:
+                # Confidence of the answer given: a confident "no" (P=0.05)
+                # is 0.95, not 0.05.
+                p_true = float(entry["noul"])
+                laya_conf = float(entry.get("confidence", max(p_true, 1 - p_true)))
+            elif "choice" in entry:
+                laya_conf = float(entry.get("confidence", 0.0))
+            else:
+                laya_conf = 0.0
+            if use_prob:
+                match = laya_value is not None and (
+                    (laya_value >= 0.5) == bool(legacy)
+                )
+                shown_match = bool(laya_value is not None and laya_value >= 0.5)
+            else:
+                match = laya_value is not None and laya_value == legacy
+                shown_match = bool(match)
+            rows.append({
+                "question": q,
+                "laya": laya_value if not use_prob else shown_match,
+                "laya_conf": laya_conf,
+                "legacy": bool(legacy) if use_prob else legacy,
+                "match": bool(match),
+            })
+
+        # UNDERSTANDING
+        _cmp("intent", s1.choice(answers, "intent", None), legacy_intent)
+        _cmp("is_question", _noul("is_question"), legacy_is_question, use_prob=True)
+        _cmp("query_complexity", s1.choice(answers, "query_complexity", None), legacy_complexity)
+        _cmp("topic_changed", _noul("topic_changed"), legacy_topic_shift, use_prob=True)
+        _cmp("needs_verify", _noul("needs_verify"), legacy_verify, use_prob=True)
+
+        # ACTION (no legacy counterpart yet -- logged for Phase-2 design)
+        for q in ("tool_needed", "invoke_llm", "escalate"):
+            _cmp(q, _noul(q), False, use_prob=True)
+        _cmp("tool", s1.choice(answers, "tool", None), "none")
+
+        # SIGNAL (no legacy counterpart)
+        _cmp("sentiment", s1.choice(answers, "sentiment", None), legacy_sentiment)
+        for q in ("urgent", "high_stakes"):
+            _cmp(q, _noul(q), False, use_prob=True)
+
+        self._emit_turn_rows(
+            session_id,
+            gen,
+            {
+                "session_id": session_id,
+                "transcript": transcript,
+                "state": state,
+                "rows": rows,
+            },
+        )
+
+        if not (self._phase2 or self._phase5):
+            return
+
+        # ---- Phase-2/5 enforcement (fail-open) -------------------------
+        # Every override below requires a present, sufficiently-confident
+        # answer; anything weak or missing keeps the legacy value, and an
+        # empty ``answers`` dict already returned above. Choice-based fields
+        # use ``conf_threshold``; routing flags use the stricter 0.9 action
+        # threshold because base checkpoints are over-confident.
+        laya_intent = s1.choice(answers, "intent", None)
+        if laya_intent is not None:
+            ctx.intent = laya_intent
+
+        is_question_prob = _noul("is_question")
+        if is_question_prob is not None:
+            ctx.is_question = is_question_prob >= 0.5
+
+        laya_sentiment = s1.choice(answers, "sentiment", None)
+        if laya_sentiment is not None:
+            ctx.user_sentiment = laya_sentiment
+            ctx.sentiment_locked = True
+
+        laya_complexity = s1.choice(answers, "query_complexity", None)
+        if laya_complexity is not None:
+            ctx.query_complexity = laya_complexity
+            ctx.complexity_locked = True
+
+        if s1.action_noul(answers, "urgent", default=False):
+            ctx.urgent = True
+        if s1.action_noul(answers, "escalate", default=False):
+            ctx.model_tier = "fallback"
+
+    async def _cadence1_probe(
+        self, partial: str, session_id: str
+    ) -> None:
+        """Cadence-1 (live-listening) System-1 probe.
+
+        Runs as a background task at the partial-transcript cadence (~1s) on
+        the freshest partial text. It stashes the verdict on
+        ``self._s1_cadence1[session_id]`` for the endpoint/barge paths to
+        consume and always shadow-logs Laya-vs-legacy rows (the consumers gate
+        actual Enforcement behind ``self._phase3`` / ``self._phase4``). Fails
+        open: any error or timeout simply leaves the last good verdict (or none)
+        in place.
+        """
+        s1 = self._s1
+        try:
+            if not s1.enabled or not partial.strip():
+                return
+            try:
+                ctx = self._ctx(session_id)
+                state = {"transcript": partial, "turn_count": ctx.turn_count}
+                # Stamp the turn now: if the utterance ends while Laya runs,
+                # the verdict must not count for the next turn.
+                generation = self._generation(session_id)
+                start = time.perf_counter()
+                # Low priority: skipped while the model is busy or a
+                # turn-level call is waiting, so it never delays a reply.
+                answers = await s1.predict(
+                    state, CADENCE1_QUESTIONS, priority=False
+                )
+                self._latency.measure("laya_c1", start)
+                if not answers:
+                    return
+                self._log_latency("laya_c1")
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"laya cadence-1 probe failed: {e!r}")
+                return
+
+            turn_complete = s1.noul_prob(answers, "turn_complete")
+            completion_conf = s1.score(answers, "completion_conf", default=None)
+            barge, barge_conf, _ = s1.choice_of(answers, "barge_type")
+            self._s1_cadence1[session_id] = {
+                "partial": partial,
+                "generation": generation,
+                "turn_complete": turn_complete,
+                "completion_conf": completion_conf,
+                "barge_type": barge if barge_conf >= _C1_CONF_REQ else None,
+                "barge_conf": barge_conf,
+                "ts": time.monotonic(),
+            }
+
+            rows: list[dict] = []
+            incomplete = self.turn_detector.classifier.is_incomplete(partial)
+            rows.append({
+                "question": "c1_turn_complete",
+                "laya": bool(turn_complete is not None and turn_complete >= 0.5),
+                "laya_conf": float(
+                    (answers.get("turn_complete") or {}).get("confidence", 0.0)
+                ),
+                "legacy": not incomplete,
+                "match": bool(
+                    turn_complete is not None
+                    and (turn_complete >= 0.5) == (not incomplete)
+                ),
+            })
+            legacy_barge = BackchannelInterrupt.classify(partial)
+            rows.append({
+                "question": "c1_barge_type",
+                "laya": barge,
+                "laya_conf": barge_conf,
+                "legacy": legacy_barge,
+                "match": bool(barge is not None and barge == legacy_barge),
+            })
+            s1.log_shadow(
+                session_id=session_id,
+                transcript=partial,
+                state=state,
+                rows=rows,
+            )
+        finally:
+            self._s1_c1_inflight.pop(session_id, None)
+
+    # ------------------------------------------------------------------
+    # Outcome labels for Laya training
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _words(text: str) -> list[str]:
+        return re.findall(r"[a-z0-9']+", text.lower())
+
+    def _log_endpoint_labels(
+        self, session_id: str, partials: list[str], final: str, turn_count: int
+    ) -> None:
+        """Label each partial heard during the utterance by what happened
+        next: the user had finished (final adds no words) or kept talking
+        (final adds 2+ words). One extra word is ambiguous (STT jitter) and
+        skipped. Needs no Laya call, so it costs no GPU time."""
+        if not self._s1.enabled or not partials:
+            return
+        final_len = len(self._words(final))
+        seen: set[str] = set()
+        for part in partials:
+            if part in seen:
+                continue
+            seen.add(part)
+            part_len = len(self._words(part))
+            if not part_len:
+                continue
+            extra = final_len - part_len
+            if extra <= 0:
+                label = True
+            elif extra >= 2:
+                label = False
+            else:
+                continue
+            self._s1.log_shadow(
+                session_id=session_id,
+                transcript=part,
+                state={"transcript": part, "turn_count": turn_count},
+                rows=[{
+                    "question": "turn_complete",
+                    "laya": None,
+                    "laya_conf": None,
+                    "legacy": None,
+                    "match": False,
+                    "outcome": label,
+                }],
+            )
+
+    _TOOL_LABELS: ClassVar[frozenset[str]] = frozenset(
+        TURN_QUESTIONS["tool"]["criteria"]
+    )
+
+    def _apply_tool_outcome(self, rows: list[dict], tools: list[str]) -> None:
+        for row in rows:
+            if row.get("question") == "tool_needed":
+                row["outcome"] = bool(tools)
+            elif row.get("question") == "tool":
+                if not tools:
+                    row["outcome"] = "none"
+                elif tools[0] in self._TOOL_LABELS:
+                    row["outcome"] = tools[0]
+
+    def _record_turn_tools(
+        self, session_id: str, gen: int, tools: list[str]
+    ) -> None:
+        """The tools this turn really ran (empty = answered without one)."""
+        tools = [t for t in tools if t]
+        self._turn_outcomes[session_id] = {"gen": gen, "tools": tools}
+        pending = self._pending_turn_rows.get(session_id)
+        if pending and pending["gen"] == gen:
+            self._pending_turn_rows.pop(session_id, None)
+            self._apply_tool_outcome(pending["log"]["rows"], tools)
+            self._s1.log_shadow(**pending["log"])
+
+    def _emit_turn_rows(self, session_id: str, gen: int, log: dict) -> None:
+        """Log turn rows with the turn's tool outcome attached. Shadow-only
+        passes run after the turn, so the outcome is usually known; a Phase-2
+        pass runs before the LLM, so its rows wait for ``_record_turn_tools``
+        (or the turn's end, if it is interrupted first)."""
+        outcome = self._turn_outcomes.get(session_id)
+        if outcome is not None and outcome["gen"] == gen:
+            self._apply_tool_outcome(log["rows"], outcome["tools"])
+            self._s1.log_shadow(**log)
+            return
+        if gen == self._generation(session_id) and session_id in self._current_tasks:
+            self._pending_turn_rows[session_id] = {"gen": gen, "log": log}
+            return
+        self._s1.log_shadow(**log)
+
+    def _prefetch_for(self, entry: dict | None, text: str) -> dict | None:
+        """A prefetched tool result, only if it still answers *text*. Time,
+        date and dice don't depend on the wording; a web search or a
+        calculation must match what the user actually said."""
+        if not entry:
+            return None
+        tool = entry.get("tool")
+        if tool == "search_web":
+            if self._words(entry.get("partial", "")) != self._words(text):
+                return None
+        elif tool == "calculate":
+            expr = "".join(str((entry.get("args") or [""])[0]).split())
+            if not expr or expr not in "".join(text.split()):
+                return None
+        return entry
+
+    # ------------------------------------------------------------------
+    # Latency Step-1: live-listening tool prefetch (see _prefetch_probe).
+    # ------------------------------------------------------------------
+
+    def _consume_prefetch(self, session_id: str) -> dict | None:
+        """Take (and clear) a stashed live-listening tool prefetch.
+
+        Returns the entry only when it was computed for THIS utterance (the
+        generation stamped while the user spoke still matches -- this runs
+        before ``_bump_generation``). The cache is always cleared so a later
+        turn can never reuse a stale tool answer.
+        """
+        entry = self._s1_prefetch.pop(session_id, None)
+        if not entry:
+            return None
+        if entry.get("gen") != self._generation(session_id):
+            return None
+        return entry
+
+    @staticmethod
+    def _prefetch_args(partial: str, tool: str) -> list[str] | None:
+        """Conservative args for a prefetched tool call.
+
+        Only tools whose arguments can be derived directly from the raw
+        partial are prefetched. Structured tools (weather city, reminder text)
+        return ``None`` so a prefetch never guesses a nonsense argument.
+        """
+        text = partial.strip().strip("?.!")
+        if tool == "roll_dice":
+            return ["6"]
+        if tool in ("get_time", "get_date"):
+            return []
+        if tool == "calculate":
+            m = StreamingPipeline._FAST_EXPR_RE.search(text)
+            return [m.group(0)] if m else None
+        if tool == "search_web":
+            return [text] if text else None
+        return None
+
+    async def _prefetch_probe(self, partial: str, session_id: str) -> None:
+        """Latency Step-1: prefetch a confident tool result during speech.
+
+        Runs as a background task on fresh partials. A confident
+        ``tool_needed -> tool`` answer (strict 0.9 action threshold) whose args
+        can be derived from the partial is executed once and the result stashed
+        (with the utterance's generation tag) for ``_consume_prefetch`` to feed
+        the LLM's first prompt. ``priority=False`` keeps the call out of the
+        model's face while the user speaks; the task is cancelled at
+        speech-end, so a worst-case miss costs exactly one wasted lookup.
+        """
+        s1 = self._s1
+        try:
+            if not s1.enabled or len(partial.split()) < 3:
+                return
+            try:
+                generation = self._generation(session_id)
+                start = time.perf_counter()
+                answers = await s1.predict(
+                    {
+                        "transcript": partial,
+                        "turn_count": self._ctx(session_id).turn_count,
+                    },
+                    PREFETCH_QUESTIONS,
+                    priority=False,
+                )
+                self._latency.measure("laya_prefetch", start)
+                if not answers:
+                    return
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"laya prefetch probe failed: {e!r}")
+                return
+
+            # Gate on `tool` itself (the benchmark's most accurate question,
+            # at the normal choice bar). tool_needed never reaches the strict
+            # 0.9 action bar, and a wrong guess only costs one lookup.
+            tool = s1.choice(answers, "tool", None)
+            if not tool or tool == "none":
+                return
+            args = self._prefetch_args(partial, tool)
+            if args is None:
+                return
+            out = await self._tool_registry.execute_call({"name": tool, "args": args})
+            result = str(out.get("result", ""))
+            if not result.strip() or result.strip().lower().startswith("error"):
+                return
+            self._s1_prefetch[session_id] = {
+                "gen": generation,
+                "partial": partial,
+                "tool": tool,
+                "args": args,
+                "result": result,
+            }
+            logger.debug(
+                f"laya prefetch session={session_id} tool={tool} "
+                f"partial={partial!r}"
+            )
+        finally:
+            self._s1_prefetch_inflight.pop(session_id, None)
+
+    # ------------------------------------------------------------------
+    # Phase-2 deterministic routing (used only when TASA_LAYA_PHASE2=1)
+    # ------------------------------------------------------------------
+
+    _FAST_CANNED_REPLIES: ClassVar[dict[str, str]] = {
+        "greeting": "Hi! How can I help you today?",
+        "farewell": "Goodbye! Have a great day.",
+        "backchannel": "Got it.",
+    }
+
+    # Whole-word phatic cues. The legacy intent classifier matches fragments
+    # ("ok" inside "book", "so" inside "I think so"), so a canned
+    # greeting/farewell/backchannel must only fire when the utterance is a
+    # briefly-phrased phatic exchange that actually contains the cue -- a stray
+    # label on "show me this" or "I think so" must never get "Hi! How can I
+    # help?".
+    # Whole-word phatic cues per intent, plus a shared filler set. The canned
+    # reply is only correct when the WHOLE utterance is the phatic phrase:
+    # "hello there" is a greeting, but "ok book a table", "sure cancel my
+    # order", "show me this", or "hello world" all mix in real content words
+    # and must go to the LLM. A whole-word cue anywhere is therefore NOT enough
+    # -- every token must be a known phatic word or an allowed filler (see
+    # ``_phatic_gate`` below).
+    _FAST_PHATIC_WORDS: ClassVar[dict[str, frozenset[str]]] = {
+        "greeting": frozenset({
+            "hi", "hello", "hey", "hiya", "yo", "howdy", "greetings",
+            "namaste", "sup", "welcome", "hola", "good", "morning",
+            "afternoon", "evening", "day", "there",
+        }),
+        "farewell": frozenset({
+            "bye", "goodbye", "good-bye", "bye-bye", "farewell", "goodnight",
+            "good-night", "cheerio", "ciao", "adios", "later", "good",
+            "night", "see", "ya", "you", "there",
+        }),
+        "backchannel": frozenset({
+            "ok", "okay", "yeah", "yep", "yes", "yup", "sure", "uh", "huh",
+            "mhm", "mm", "alright", "right", "got", "it",
+            "thanks", "thank", "sounds", "good", "great", "fine", "perfect",
+            "cool", "understood", "roger", "there",
+        }),
+    }
+
+    # Fillers may legally surround the cue in any lane ("hello there",
+    # "ok thanks", "thanks so much") without turning the canned reply off.
+    _FAST_PHATIC_FILLERS: ClassVar[frozenset[str]] = frozenset({
+        "please", "thanks", "thank", "you", "there", "very", "much",
+    })
+
+    # Templated-tool detectors. Deliberately narrow so a mismatch can never
+    # swallow a real question: time queries reject an "in <place>" modifier,
+    # date queries reject possessive/weather continuations, and calc requires
+    # the WHOLE utterance to be a calculable expression. A matched template
+    # must also be _bare_tail-clean: "what time is it" + nothing (or only
+    # "now"/"today") fires, while "... in paris", "... difference between
+    # london and tokyo", or "what day is christmas" dial past the template
+    # back to the LLM.
+    _FAST_TIME_RE = re.compile(
+        r"\b(?:what(?:'s| is)? the time|what time is it|current time|"
+        r"tell me the time)\b(?!\s+in\b)",
+        re.IGNORECASE,
+    )
+    _FAST_DATE_RE = re.compile(
+        r"\b(?:what(?:'s| is)? (?:the |today's )?(?:date|day)|"
+        r"what day is it|today's date|what is today)\b(?!'s|\s+\w*weather)",
+        re.IGNORECASE,
+    )
+    _FAST_CALC_RE = re.compile(
+        r"^(?:please\s+)?(?:calculate|compute)\s+(.+?)\??\s*$",
+        re.IGNORECASE,
+    )
+    _FAST_EXPR_RE = re.compile(
+        r"-?\d+(?:\.\d+)?(?:\s*[+\-*/]\s*-?\d+(?:\.\d+)?)+"
+    )
+
+    # Phase-5 complexity-routing gate: whole-utterance acknowledgment phrases
+    # that get a deterministic reply INSTEAD of the LLM when a confident Laya
+    # complexity verdict marks them trivial. Multi-word only, so they can never
+    # collide with the single-word phatic cues above; the exact whole-utterance
+    # match (below) means a phrase with extra content words always misses and
+    # falls through to the LLM.
+    _ACK_REPLIES: ClassVar[dict[str, str]] = {
+        "sounds good": "Sounds good!",
+        "makes sense": "Makes sense.",
+        "got it": "Got it!",
+        "no problem": "No problem!",
+        "sure thing": "Sure thing!",
+        "you bet": "You bet.",
+        "that works": "That works!",
+        "roger that": "Roger that.",
+        "all good": "All good.",
+        "no worries": "No worries!",
+        "works for me": "Works for me!",
+        "fine by me": "Fine by me!",
+    }
+
+    @staticmethod
+    def _ack_phrase(text: str) -> str | None:
+        """Whole-utterance match against the Phase-5 acknowledgment table.
+
+        Case/punct-insensitive but exact otherwise: ``"sounds good"`` and
+        ``"sounds good okay"`` differ, so only a genuinely trivial bare
+        acknowledgment is ever routed off the LLM."""
+        norm = re.sub(r"[^a-z ]", "", text.lower()).strip()
+        return StreamingPipeline._ACK_REPLIES.get(norm)
+
+    @staticmethod
+    def _bare_tail(
+        text: str, start: int, end: int, allowed: tuple[str, ...] = ()
+    ) -> bool:
+        """True when nothing but trailing punctuation or one of *allowed*
+        phrases follows a regex match. Keeps broad fast-path templates from
+        swallowing follow-up clauses ("what time is it in Paris", "what's the
+        time difference between London and Tokyo", "what day is Christmas")."""
+        tail = text[end:].strip(" .?!,")
+        return not tail or tail in allowed
+
+    @staticmethod
+    def _phatic_gate(text: str, vocab: frozenset[str]) -> bool:
+        """True when the WHOLE utterance is a phatic phrase: every content word
+        must be a phatic cue for that intent or an allowed filler, and at least
+        one real cue must be present. "hello there", "ok thanks", "hi", "bye"
+        can, while "hello world", "ok book a table", "sure cancel my order",
+        "show me this", or "I think so" all carry real content words and must
+        go to the LLM."""
+        toks = [t.lower() for t in re.findall(r"[A-Za-z][A-Za-z'-]*", text)]
+        if not toks or len(toks) > 6:
+            return False
+        fillers = StreamingPipeline._FAST_PHATIC_FILLERS
+        return any(t in vocab for t in toks) and all(
+            t in vocab or t in fillers for t in toks
+        )
+
+    @staticmethod
+    def _fast_ok(result: str) -> bool:
+        return bool(result) and not result.strip().lower().startswith("error")
+
+    async def _fast_tool_reply(
+        self, transcript: str, tools: list[str] | None = None
+    ) -> str | None:
+        """Deterministic templated-tool replies; None means: use the LLM.
+        The tool actually run is appended to *tools* (outcome labels)."""
+        tools = [] if tools is None else tools
+        text = transcript.strip()
+        if not text:
+            return None
+
+        m = self._FAST_TIME_RE.search(text)
+        if m and self._bare_tail(text, m.start(), m.end(), ("now", "right now", "today")):
+            out = await self._tool_registry.execute_call(
+                {"name": "get_time", "args": []}
+            )
+            if self._fast_ok(str(out["result"])):
+                tools.append("get_time")
+                return f"It is {out['result']}."
+            return None
+
+        m = self._FAST_DATE_RE.search(text)
+        if m and self._bare_tail(text, m.start(), m.end(), ("today", "right now")):
+            out = await self._tool_registry.execute_call(
+                {"name": "get_date", "args": []}
+            )
+            if self._fast_ok(str(out["result"])):
+                tools.append("get_date")
+                return f"Today is {out['result']}."
+            return None
+
+        m = self._FAST_CALC_RE.search(text)
+        if m:
+            expr = m.group(1).strip().replace("\u00d7", "*").replace("\u00f7", "/")
+            if self._FAST_EXPR_RE.fullmatch(expr.strip()):
+                out = await self._tool_registry.execute_call(
+                    {"name": "calculate", "args": [expr]}
+                )
+                if self._fast_ok(str(out["result"])):
+                    tools.append("calculate")
+                    return f"The answer is {out['result']}."
+            return None
+
+        return None
+
+    async def _fast_reply(
+        self,
+        transcript: str,
+        ctx: ConversationContext,
+        tools: list[str] | None = None,
+    ) -> str | None:
+        """Conservative deterministic fast-action table (Phase-2 LLM-skip).
+
+        Returns a ready-to-speak reply or ``None`` to run the LLM as usual.
+        ``invoke_llm=False`` is only ever true when this returns a reply; any
+        miss (unknown intent, tool failure, bare expression) falls through to
+        the LLM. Tools are checked before canned phatic replies so that
+        "hi, what time is it" answers the time, not a fixed greeting. Canned
+        phatics additionally require a whole-word cue (see ``_phatic_gate``),
+        so a fragment-matching intent label can never short-circuit a real
+        request.
+        """
+        tool_reply = await self._fast_tool_reply(transcript, tools)
+        if tool_reply is not None:
+            return tool_reply
+        canned = self._FAST_CANNED_REPLIES.get(ctx.intent)
+        if canned is None:
+            return None
+        phat = self._FAST_PHATIC_WORDS.get(ctx.intent)
+        if phat is None or not self._phatic_gate(transcript, phat):
+            return None
+        return canned
+
+    def _llm_for(self, ctx: ConversationContext) -> LLMProvider:
+        """Primary or escalated (fallback) LLM for this turn's answer."""
+        if ctx.model_tier == "fallback" and self.llm_fallback is not None:
+            return self.llm_fallback
+        return self.llm
+
+    def shadow_report(self) -> dict:
+        """Phase-1 telemetry: Laya-vs-legacy agreement per question type."""
+        return self._s1.shadow_report()
+
+    def system1(self) -> LayaSystem1 | None:
+        """Public accessor for the System-1 decision layer (shadow mode)."""
+        return self._s1
 
     def _schedule_llm_facts(
         self, session_id: str, transcript: str, facts: FactMemory
@@ -1773,6 +2944,7 @@ class StreamingPipeline:
         facts: FactMemory | None = None,
         session_id: str = "default",
         user_repeated: bool = False,
+        prefetch: dict | None = None,
     ) -> list[dict[str, str]]:
         has_context = False
         retrieved: list[tuple[str, str | None]] = []
@@ -1792,8 +2964,13 @@ class StreamingPipeline:
             if retrieved:
                 has_context = True
 
-        complexity = self._classify_query_complexity(transcript)
-        ctx.query_complexity = complexity
+        if ctx.complexity_locked:
+            # Phase-2: Laya supplied a confident complexity label; don't let
+            # the legacy heuristic clobber it.
+            complexity = ctx.query_complexity
+        else:
+            complexity = self._classify_query_complexity(transcript)
+            ctx.query_complexity = complexity
 
         system_prompt = build_system_prompt(
             engagement=ctx.engagement,
@@ -1901,6 +3078,21 @@ class StreamingPipeline:
             if memory.token_estimate() > 3072:
                 memory.truncate_to_budget(3072)
                 logger.debug(f"truncated memory for session {ctx.turn_count}")
+
+        # Latency Step-1: a tool lookup already ran while the user spoke. Seed
+        # the answer with it so the LLM can reply without paying the tool
+        # round-trip; it is clearly labeled as a pre-query lookup so the model
+        # still calls a tool itself when the data does not cover the question.
+        if prefetch and str(prefetch.get("result", "")).strip():
+            messages.append({
+                "role": "system",
+                "content": (
+                    "A live-listening lookup already ran and returned:\n"
+                    f"{prefetch.get('tool')}: {prefetch.get('result')}\n"
+                    "Use it to answer; call the tool again only if it does "
+                    "not cover what the user is asking."
+                ),
+            })
 
         messages.append({"role": "user", "content": transcript})
 

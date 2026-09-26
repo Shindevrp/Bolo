@@ -51,6 +51,7 @@ def _build_providers():
     from providers.stt.faster_whisper_stt import FasterWhisperSTT
     from providers.llm.vllm_llm import VLLMProvider
     from providers.tts.piper_tts import PiperTTS
+    from providers.laya.client import LayaSystem1
     from modules.vad.silero_vad import SileroVAD
     from modules.turn.detector import TurnDetector
     from modules.turn.interrupt import InterruptHandler
@@ -70,6 +71,17 @@ def _build_providers():
         api_key=os.getenv("TASA_LLM_API_KEY", "EMPTY"),
         model=os.getenv("TASA_LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct-AWQ"),
     )
+
+    # Optional escalation tier (Phase-2 "stronger LLM" fallback). Empty URL
+    # disables it: escalate votes then degrade to the primary model.
+    llm_fallback = None
+    if config.llm_fallback_url:
+        llm_fallback = VLLMProvider(
+            base_url=config.llm_fallback_url,
+            api_key=config.llm_fallback_api_key,
+            model=config.llm_fallback_model
+            or os.getenv("TASA_LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct-AWQ"),
+        )
 
     # Build TTS: single voice
     tts = PiperTTS(
@@ -99,8 +111,18 @@ def _build_providers():
         device=_resolve_device("TASA_EMOTION_DEVICE"),
     )
 
+    system1 = LayaSystem1(
+        enabled=config.laya_enabled,
+        model=config.laya_model,
+        device=config.laya_device,
+        conf_threshold=config.laya_conf_threshold,
+        use_fp16=config.laya_fp16,
+        shadow_log=config.laya_shadow_log or None,
+    )
+
     return (stt, llm, tts, vad, turn_detector, interrupt_handler, turn_timing,
-            turn_backchannel, backchannel_gen, backchannel_timing, emotion)
+            turn_backchannel, backchannel_gen, backchannel_timing, emotion, system1,
+            llm_fallback)
 
 
 @asynccontextmanager
@@ -108,15 +130,22 @@ async def lifespan(app: FastAPI):
     global pipeline
 
     try:
-        (stt, llm, tts, vad, td, ih, tt, tbc, bcg, bct, emotion) = (
-            _build_providers()
-        )
+        (stt, llm, tts, vad, td, ih, tt, tbc, bcg, bct, emotion, system1,
+         llm_fallback) = _build_providers()
         pipeline = StreamingPipeline(
             stt=stt, llm=llm, tts=tts, vad=vad,
             turn_detector=td, interrupt_handler=ih,
             turn_timing=tt, turn_backchannel=tbc,
             backchannel_generator=bcg, backchannel_timing=bct,
             emotion_classifier=emotion,
+            system1=system1,
+            llm_fallback=llm_fallback,
+            phase2=config.laya_phase2,
+            phase3=config.laya_phase3,
+            phase4=config.laya_phase4,
+            phase5=config.laya_phase5,
+            fast_path=config.tasa_fast_path,
+            tool_prefetch=config.tool_prefetch,
         )
         app.state.pipeline = pipeline
         app.state.start_time = time.time()
@@ -130,6 +159,15 @@ async def lifespan(app: FastAPI):
             logger.info("LLM warmed up")
         except Exception as e:
             logger.warning(f"LLM warmup failed (non-critical): {e}")
+        # Warm up the escalate /fallback tier if configured so the first
+        # escalated turn never pays a cold model load.
+        if llm_fallback is not None:
+            try:
+                async for _ in llm_fallback.generate_stream(warmup_msgs):
+                    pass
+                logger.info("LLM fallback warmed up")
+            except Exception as e:
+                logger.warning(f"LLM fallback warmup failed (non-critical): {e}")
         # Warm up emotion classifier so first turn doesn't pay model load
         try:
             await asyncio.to_thread(emotion.load)
@@ -148,6 +186,16 @@ async def lifespan(app: FastAPI):
             logger.info("retrieval encoder warmed up")
         except Exception as e:
             logger.warning(f"retrieval encoder warmup failed (non-critical): {e}")
+        # Warm up the System-1 decision layer so the first live turn never pays
+        # model load (shadow mode: non-fatal if unavailable).
+        try:
+            await system1.warmup()
+            if system1.available:
+                logger.info(
+                    f"laya system-1 warmed up ({config.laya_model} on {system1.device})"
+                )
+        except Exception as e:
+            logger.warning(f"laya warmup failed (non-critical): {e}")
         logger.info("pipeline initialized")
     except Exception as e:
         logger.error(f"pipeline init failed: {e}")

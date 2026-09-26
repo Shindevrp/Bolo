@@ -28,6 +28,7 @@ COPY core/ core/
 COPY modules/ modules/
 COPY providers/ providers/
 COPY utils/ utils/
+COPY bench/ bench/
 COPY streamlit_app.py ./
 
 ENV TASA_STT_MODEL=base

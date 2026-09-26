@@ -55,7 +55,7 @@ services:
       TASA_EMOTION_ENABLED: "0"
       TASA_TTS_MODEL: /app/models/piper/en_US-lessac-medium.onnx
     ports:
-      - "8000:8000"
+      - "${TASA_DEMO_APP_PORT:-8000}:8000"
     volumes:
       - model_cache:/root/.cache
     healthcheck:
@@ -87,9 +87,42 @@ services:
       - "--server.headless"
       - "true"
     ports:
-      - "8501:8501"
+      - "${TASA_DEMO_DASHBOARD_PORT:-8501}:8501"
     restart: unless-stopped
+
+  bench:
+    image: tasa-demo:local
+    container_name: tasa-demo-bench
+    depends_on:
+      tasa:
+        condition: service_healthy
+    environment:
+      TASA_JUDGE_URL: http://ollama:11434/v1
+      TASA_JUDGE_MODEL: ${TASA_DEMO_LLM_MODEL:-qwen2.5:3b}
+    command:
+      - "python"
+      - "-m"
+      - "bench.cli"
+      - "run"
+      - "--agent"
+      - "tasa-ws"
+      - "--base-url"
+      - "ws://tasa:8000/ws/audio"
+      - "--judge-llm-url"
+      - "http://ollama:11434/v1"
+      - "--judge-model"
+      - "${TASA_DEMO_LLM_MODEL:-qwen2.5:3b}"
+      - "--limit"
+      - "6"
+      - "--out"
+      - "/app/out/report.json"
+      - "--label"
+      - "docker-demo"
+    volumes:
+      - bench_out:/app/out
+    restart: "no"
 
 volumes:
   ollama_data:
   model_cache:
+  bench_out:

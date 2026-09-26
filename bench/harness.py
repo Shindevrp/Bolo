@@ -6,6 +6,7 @@ per-scenario run -> metric collection -> optional judge LLM -> report.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import time
 from pathlib import Path
@@ -287,7 +288,8 @@ async def _run_benchmark_async(
         with open(out_path, "w") as f:
             data = rep.to_dict()
             data["markdown"] = rep.render_markdown()
-            json.dump(data, f, indent=2)
+            # Endpoint metrics are MetricResult dataclasses.
+            json.dump(data, f, indent=2, default=dataclasses.asdict)
 
     if events_out:
         refs_by_scenario: dict[str, list[str]] = {}

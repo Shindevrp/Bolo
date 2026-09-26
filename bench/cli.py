@@ -202,6 +202,38 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_laya(args) -> int:
+    """Evaluate Laya System-1 typed answers against the golden-label corpus.
+
+    Default mode runs a deterministic gold-ideal agent (CI-safe, no model);
+    ``--real`` loads the actual Laya checkpoint and scores its answers.
+    """
+    from bench.laya_eval import run_laya_cli
+
+    return run_laya_cli(args)
+
+
+def cmd_laya_export(args) -> int:
+    """Export the disk-backed shadow log into Laya training samples."""
+    from bench.laya_export import run_laya_export
+
+    return run_laya_export(args)
+
+
+def cmd_laya_finetune(args) -> int:
+    """Stage the fine-tuning dataset, train (when supported), gate quality."""
+    from bench.laya_finetune import run_laya_finetune
+
+    return run_laya_finetune(args)
+
+
+def cmd_live(args) -> int:
+    """Realtime latency probe: talk to /ws/audio, record every turn's timing."""
+    from bench.live_lat import cmd_live as _cmd_live
+
+    return _cmd_live(args)
+
+
 def cmd_compare(args) -> int:
     def load(path: str) -> dict:
         with open(path) as f:
@@ -274,6 +306,83 @@ def main(argv=None) -> int:
     p_cmp.add_argument("--a", required=True)
     p_cmp.add_argument("--b", required=True)
 
+    p_laya = sub.add_parser("laya", help="Evaluate Laya System-1 typed answers vs golden labels")
+    p_laya.add_argument("--real", action="store_true", help="load the real Laya model instead of the gold-ideal fake")
+    p_laya.add_argument("--gold", default="bench/gold/laya_gold.json", help="golden-label corpus JSON")
+    p_laya.add_argument("--limit", type=int, default=0, help="max cases (0 = all)")
+    p_laya.add_argument("--device", default=None, help="model device (auto/cuda/cpu)")
+    p_laya.add_argument("--model", default="convaiinnovations/laya", help="Laya model id")
+    p_laya.add_argument("--out", default="report.laya.json", help="write report JSON")
+
+    p_laya_export = sub.add_parser(
+        "laya-export",
+        help="Export self-labelled shadow rows as Laya training samples",
+    )
+    p_laya_export.add_argument(
+        "--input", default=None,
+        help="shadow JSONL (default: TASA_LAYA_SHADOW_LOG / ~/.tasa/shadow/rows.jsonl)",
+    )
+    p_laya_export.add_argument(
+        "--out", default="training.laya.jsonl", help="write samples JSONL"
+    )
+    p_laya_export.add_argument(
+        "--min-conf", type=float, default=0.5,
+        help="minimum confirmation a row must have to become a sample",
+    )
+    p_laya_export.add_argument(
+        "--question", default=None,
+        help="only export this question (e.g. intent, is_question, tool_needed)",
+    )
+
+    p_laya_ft = sub.add_parser(
+        "laya-finetune",
+        help="Build a training dataset from exported samples, fine-tune the probe (when supported), and gate quality on the gold corpus",
+    )
+    p_laya_ft.add_argument(
+        "--data", default="training.laya.jsonl",
+        help="self-labelled samples from `tasa-bench laya-export`",
+    )
+    p_laya_ft.add_argument(
+        "--gold", default="bench/gold/laya_gold.json",
+        help="golden-label corpus used as the quality gate",
+    )
+    p_laya_ft.add_argument(
+        "--model", default="convaiinnovations/laya",
+        help="base checkpoint to fine-tune (and to gate against)",
+    )
+    p_laya_ft.add_argument(
+        "--out-dir", default="laya_ft",
+        help="where train.jsonl / heldout.jsonl / dataset.json / checkpoint go",
+    )
+    p_laya_ft.add_argument("--real", action="store_true",
+                           help="measure the gate with the real model (default: gold-ideal fake)")
+    p_laya_ft.add_argument("--device", default=None,
+                           help="model device for --real (auto/cuda/cpu)")
+    p_laya_ft.add_argument("--gate", type=float, default=0.4811,
+                           help="macro-accuracy floor on the gold corpus; exit 1 below it (default: measured base-checkpoint baseline)")
+    p_laya_ft.add_argument("--heldout", type=float, default=0.15,
+                           help="held-out fraction for the dataset split")
+
+    p_live = sub.add_parser(
+        "live",
+        help="Realtime latency probe: stream your mic to /ws/audio and record every turn's timing",
+    )
+    p_live.add_argument("--url", default="ws://localhost:8000/ws/audio",
+                        help="TASA /ws/audio endpoint")
+    p_live.add_argument("--file", default=None,
+                        help="replay a 16000Hz mono WAV instead of using the mic")
+    p_live.add_argument("--device", type=int, default=None,
+                        help="input device index (mic)")
+    p_live.add_argument("--playback-rate", type=int, default=22050,
+                        help="TTS playback sample rate (0 = muted)")
+    p_live.add_argument("--mute", action="store_true", help="do not play replies")
+    p_live.add_argument("--seconds", type=float, default=0.0,
+                        help="capture window (0 = until Ctrl-C)")
+    p_live.add_argument("--out", default="live_trace.jsonl", help="trace output path")
+    p_live.add_argument("--baseline", default=None,
+                        help="previous trace to diff against (e.g. Laya shadow off run)")
+    p_live.add_argument("--label", default="live", help="session label in the trace")
+
     args = parser.parse_args(argv)
     if args.command == "list":
         return cmd_list(args)
@@ -285,6 +394,14 @@ def main(argv=None) -> int:
         return cmd_offline(args)
     if args.command == "compare":
         return cmd_compare(args)
+    if args.command == "laya":
+        return cmd_laya(args)
+    if args.command == "laya-export":
+        return cmd_laya_export(args)
+    if args.command == "laya-finetune":
+        return cmd_laya_finetune(args)
+    if args.command == "live":
+        return cmd_live(args)
     parser.print_help()
     return 2
 

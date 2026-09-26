@@ -8,3 +8,4 @@ venv/
 *.egg
 .DS_Store
 models/
+videos/

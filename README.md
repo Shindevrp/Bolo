@@ -27,7 +27,7 @@
 <span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">TOOLS</span>
 </p>
 </div>
-<div style="padding:14px 28px; background:#010409; border-top:1px solid #21262d; font-family:'Fira Code',ui-monospace,monospace; font-size:12px; color:#8b949e;"><span style="color:#58a6ff;">~350ms</span> first audio &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">&lt;700ms</span> full response &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">252</span> tests passing &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">74.5</span> benchmark &nbsp;&middot;&nbsp; barge-in &amp; backchannel native</div>
+<div style="padding:14px 28px; background:#010409; border-top:1px solid #21262d; font-family:'Fira Code',ui-monospace,monospace; font-size:12px; color:#8b949e;"><span style="color:#58a6ff;">~350ms</span> first audio &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">&lt;0.9s</span> voice-turn response &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">372</span> tests passing &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">74.5</span> benchmark &nbsp;&middot;&nbsp; barge-in &amp; backchannel native &nbsp;&middot;&nbsp; self-labelling Laya System-1</div>
 </div>
 </div>
 
@@ -717,6 +717,42 @@ even at P95, and utterances are never fragmented.
 > The low Completion Capture Rate is an ASR artifact (the first 1–3 words of an
 > utterance are routinely truncated before transcription), separate from
 > turn-taking correctness.
+
+### Latency & System-1 (Laya)
+
+TASA embeds a lightweight System-1 assistant model (Laya) that runs by default
+in *shadow mode*: every turn it predicts intent, complexity, tool-need and
+urgency in the background without ever blocking the reply. Latency work ships
+in five safety-gated steps:
+
+| Step | Feature | Default | Status |
+|------|---------|:-------:|:------:|
+| 0 | Shadow mode + per-stage latency tracking (STT / first-token / full / TTS / e2e) | on | shipped |
+| 1 | Single-miss live tool prefetch (`TASA_TOOL_PREFETCH`) | on | shipped |
+| 2 | Self-labelled shadow log → disk (`TASA_LAYA_SHADOW_LOG`) + `bench.cli laya-export` | on | shipped |
+| 3 | Fine-tune scaffolding + gold-corpus quality gate (`bench.cli laya-finetune`, macro-acc floor 0.4811) | on | shipped |
+| 4 | Cadence-1 "utterance complete" endpoint authority — speculative early turn-start during silence (`TASA_LAYA_PHASE4`) | **off** | shipped |
+| 5 | Complexity-routing gate — deterministic replies for trivial acknowledgements (`TASA_LAYA_PHASE5`) | **off** | shipped |
+
+All Laya *enforcement* (Steps 4–5, plus Phase-2 routing under `TASA_LAYA_PHASE2`)
+is fail-closed (off by default) and fail-open (weak/missing verdicts keep the
+legacy path). Telemetry always records either way.
+
+#### Live latency readings
+
+`bench.cli live` streams the microphone over `/ws/audio` and records each
+stage per turn (p50 over a real session, faster-whisper `base` + Piper):
+
+| Stage | p50 | range |
+|-------|:---:|:---:|
+| STT tail (speech-end → transcript) | ~150 ms | 130–190 ms |
+| LLM first token | ~490 ms | 345–545 ms |
+| Perceived response (speech-end → first audio) | ~820 ms | 735–1435 ms |
+| Full turn rtt (including TTS audio) | ~1535 ms | 1140–4630 ms |
+
+`<700ms` full response refers to the deterministic fast-path baseline
+(canned/templated replies, no LLM, ~765ms total); with real STT + LLM + TTS
+the measured voice-turn p50 is ~820ms perceived / ~1.5s rtt.
 
 ---
 

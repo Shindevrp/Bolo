@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "TASA Voice Assistant — Laya System-1 Decisions",
+    "quality_profile": "showcase",
+    "viewBox": [1180, 456],
+    "views": [
+      {
+        "id": "interrupt-path",
+        "label": "Interrupt / barge-in",
+        "focus": ["client", "ws", "pipeline", "laya", "barge"],
+        "note": "Break-in speech resolves through the cadence-1 probe to a cancel."
+      },
+      {
+        "id": "completion-path",
+        "label": "Turn completion",
+        "focus": ["pipeline", "laya", "endpoint"],
+        "note": "turn_complete + completion_conf gate endpoint shortening."
+      },
+      {
+        "id": "backchannel-path",
+        "label": "Backchannel keep",
+        "focus": ["pipeline", "laya", "backchannel"],
+        "note": "Feedback keeps the response flowing; nothing is cancelled."
+      }
+    ]
+  },
+  "components": [
+    { "id": "vad", "type": "backend", "label": "Silero VAD", "sublabel": "onset · echo grace", "pos": [470, 40], "size": [140, 56] },
+    { "id": "stt", "type": "backend", "label": "Whisper STT", "sublabel": "partials → transcripts", "pos": [660, 40], "size": [140, 56] },
+    { "id": "tts", "type": "backend", "label": "Piper TTS", "sublabel": "WAV chunks · interrupt-aware", "pos": [1000, 40], "size": [140, 56] },
+    { "id": "client", "type": "frontend", "label": "Browser /ui", "sublabel": "ws:// /ws/audio", "pos": [40, 186], "size": [140, 56] },
+    { "id": "ws", "type": "backend", "label": "FastAPI WS Gateway", "sublabel": "app/routes/ws.py", "pos": [250, 186], "size": [140, 56] },
+    { "id": "pipeline", "type": "backend", "label": "StreamingPipeline core", "sublabel": "core/pipeline.py", "pos": [460, 186], "size": [140, 56] },
+    { "id": "llm", "type": "backend", "label": "LLM responder", "sublabel": "tokens → sentences", "pos": [670, 186], "size": [140, 56] },
+    { "id": "backchannel", "type": "backend", "label": "Backchannel keep", "sublabel": "feedback keeps utterance", "pos": [40, 332], "size": [140, 56] },
+    { "id": "laya", "type": "backend", "label": "Laya System-1", "sublabel": "convaiinnovations/laya", "tag": "cadence-1 + cadence-2", "pos": [460, 332], "size": [140, 56] },
+    { "id": "endpoint", "type": "backend", "label": "Turn completion", "sublabel": "turn_complete gates", "pos": [700, 332], "size": [140, 56] },
+    { "id": "barge", "type": "backend", "label": "Barge-In / Interrupt", "sublabel": "signal_interrupt", "pos": [940, 332], "size": [140, 56] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "System-1 Decision Layer", "wraps": ["backchannel", "laya", "endpoint", "barge"] },
+    { "kind": "region", "label": "TASA Backend", "wraps": ["ws", "pipeline", "vad", "stt", "llm", "tts", "laya", "endpoint", "barge", "backchannel"] }
+  ],
+  "connections": [
+    { "id": "client-feed", "from": "client", "to": "ws", "label": "PCM 16 kHz", "variant": "emphasis", "fromSide": "right", "toSide": "left" },
+    { "id": "ws-frames", "from": "ws", "to": "pipeline", "label": "128 ms frames", "fromSide": "right", "toSide": "left" },
+    { "id": "pipeline-vad", "from": "pipeline", "to": "vad", "label": "speech · silence", "labelAt": [520, 112], "fromSide": "top", "toSide": "bottom" },
+    { "id": "pipeline-stt", "from": "pipeline", "to": "stt", "label": "audio → transcript", "labelAt": [700, 118], "fromSide": "top", "toSide": "bottom", "via": [[530, 164], [730, 164]] },
+    { "id": "pipeline-llm", "from": "pipeline", "to": "llm", "label": "messages → tokens", "labelAt": [700, 272], "fromSide": "right", "toSide": "left" },
+    { "id": "pipeline-tts", "from": "pipeline", "to": "tts", "label": "text → WAV", "labelAt": [1030, 156], "fromSide": "top", "toSide": "bottom", "via": [[530, 138], [1070, 138]] },
+    { "id": "ws-return", "from": "ws", "to": "client", "label": "audio + INTERRUPT", "labelAt": [208, 160], "fromSide": "top", "toSide": "top", "via": [[320, 150], [110, 150]] },
+    { "id": "pipeline-laya", "from": "pipeline", "to": "laya", "label": "partial + turn transcript", "variant": "emphasis", "labelAt": [520, 255], "fromSide": "bottom", "toSide": "top" },
+    { "id": "laya-endpoint", "from": "laya", "to": "endpoint", "label": "turn_complete · completion_conf", "labelAt": [700, 404], "fromSide": "right", "toSide": "left" },
+    { "id": "laya-barge", "from": "laya", "to": "barge", "label": "barge_type · confidence", "labelAt": [850, 408], "fromSide": "bottom", "toSide": "bottom", "via": [[530, 430], [1010, 430]] },
+    { "id": "laya-backchannel", "from": "laya", "to": "backchannel", "label": "backchannel → keep", "labelAt": [260, 344], "fromSide": "left", "toSide": "right" },
+    { "id": "endpoint-pipeline", "from": "endpoint", "to": "pipeline", "label": "shorten / finalize turn", "labelAt": [430, 404], "fromSide": "left", "toSide": "right", "via": [[615, 360], [615, 214]] },
+    { "id": "barge-pipeline", "from": "barge", "to": "pipeline", "label": "cancel LLM + TTS", "labelAt": [800, 296], "fromSide": "top", "toSide": "right", "via": [[1010, 315], [625, 315], [625, 214]] },
+    { "id": "backchannel-pipeline", "from": "backchannel", "to": "pipeline", "label": "keep response flowing", "labelAt": [260, 270], "fromSide": "right", "toSide": "left", "via": [[405, 360], [405, 214]] }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Cadence-1 · turn timing", "items": ["turn_complete + completion_conf gate endpoint shortening", "probe verdict trusted only inside a 2 s freshness window", "raw heads tracked separately from gated accuracy in bench/"] },
+    { "dot": "emerald", "title": "Cadence-2 · turn context", "items": ["intent, sentiment, topic, complexity, escalate, urgent, needs_verify", "shadow-logged every turn; overrides ctx only when confident", "weak or missing Laya answer silently keeps the legacy value"] },
+    { "dot": "violet", "title": "Interrupt semantics", "items": ["barge_type = disagreement → cancel immediately + INTERRUPT", "barge_type = backchannel (\"yeah\" / \"uh-huh\") → keep speaking", "raised gate = echo floor · 1.5 so the assistant never self-interrupts"] }
+  ]
+}

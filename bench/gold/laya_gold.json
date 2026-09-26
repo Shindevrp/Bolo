@@ -1,0 +1,566 @@
+{
+  "description": "Golden labels for the Laya System-1 decision-model eval (bench.cli laya).",
+  "decisions": {
+    "choice": "argmax label taken at confidence >= 0.5",
+    "action_noul": "P(true) >= 0.9 for routing flags (invoke_llm, escalate, urgent, tool_needed)",
+    "noul": "P(true) >= 0.5",
+    "turn_complete": "P(true) >= 0.9 (cadence-1)",
+    "completion_conf": "score >= 7.0 == confident",
+    "barge_type": "choice label taken at confidence >= 0.8"
+  },
+  "cases": [
+    {
+      "id": "greet-1",
+      "text": "hello there",
+      "partial": true,
+      "prev_intent": "",
+      "labels": {
+        "intent": "greeting", "is_question": false, "query_complexity": "simple",
+        "topic": "smalltalk", "entity_type": "none", "needs_verify": false,
+        "tool_needed": false, "tool": "none", "invoke_llm": false, "escalate": false,
+        "sentiment": "neutral", "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "farewell-1",
+      "text": "goodbye",
+      "partial": true,
+      "labels": {
+        "intent": "farewell", "is_question": false, "query_complexity": "simple",
+        "topic": "smalltalk", "entity_type": "none", "needs_verify": false,
+        "tool_needed": false, "tool": "none", "invoke_llm": false, "escalate": false,
+        "sentiment": "neutral", "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "backchannel-1",
+      "text": "okay",
+      "partial": true,
+      "labels": {
+        "intent": "backchannel", "is_question": false, "query_complexity": "simple",
+        "invoke_llm": false, "escalate": false, "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "backchannel"
+      }
+    },
+    {
+      "id": "backchannel-2",
+      "text": "uh-huh",
+      "partial": true,
+      "labels": {
+        "intent": "backchannel", "is_question": false, "invoke_llm": false,
+        "high_stakes": false, "urgent": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "backchannel"
+      }
+    },
+    {
+      "id": "backchannel-3",
+      "text": "yeah sure",
+      "partial": true,
+      "labels": {
+        "intent": "backchannel", "is_question": false, "query_complexity": "simple",
+        "invoke_llm": false, "high_stakes": false, "sentiment": "positive",
+        "turn_complete": true, "completion_conf": true, "barge_type": "backchannel"
+      }
+    },
+    {
+      "id": "time-1",
+      "text": "what time is it",
+      "partial": true,
+      "labels": {
+        "intent": "question", "is_question": true, "query_complexity": "simple",
+        "topic": "math_logic", "entity_type": "none", "needs_verify": false,
+        "tool_needed": true, "tool": "get_time", "invoke_llm": false, "escalate": false,
+        "sentiment": "neutral", "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "date-1",
+      "text": "what day is today",
+      "partial": true,
+      "labels": {
+        "intent": "question", "is_question": true, "query_complexity": "simple",
+        "topic": "math_logic", "needs_verify": false,
+        "tool_needed": true, "tool": "get_date", "invoke_llm": false,
+        "high_stakes": false, "urgent": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "calc-1",
+      "text": "calculate 15 percent of 250",
+      "partial": true,
+      "labels": {
+        "intent": "command", "is_question": false, "query_complexity": "simple",
+        "topic": "math_logic", "needs_verify": false,
+        "tool_needed": true, "tool": "calculate", "invoke_llm": false,
+        "high_stakes": false, "urgent": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "calc-2",
+      "text": "what is two plus two times three",
+      "partial": true,
+      "labels": {
+        "intent": "question", "is_question": true, "query_complexity": "simple",
+        "topic": "math_logic", "needs_verify": false,
+        "tool_needed": true, "tool": "calculate", "invoke_llm": false,
+        "high_stakes": false, "urgent": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "weather-1",
+      "text": "what's the weather in Bangalore",
+      "partial": true,
+      "labels": {
+        "intent": "question", "is_question": true, "query_complexity": "simple",
+        "topic": "weather", "entity_type": "place", "needs_verify": true,
+        "tool_needed": true, "tool": "get_weather", "invoke_llm": true,
+        "high_stakes": false, "urgent": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "news-1",
+      "text": "what are today's headlines",
+      "partial": true,
+      "labels": {
+        "intent": "question", "is_question": true, "query_complexity": "standard",
+        "topic": "news", "needs_verify": true,
+        "tool_needed": true, "tool": "get_news", "invoke_llm": true,
+        "high_stakes": false, "urgent": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "restaurant-1",
+      "text": "can you recommend some restaurants near Hyderabad",
+      "partial": true,
+      "labels": {
+        "intent": "question", "is_question": true, "query_complexity": "standard",
+        "topic": "food", "entity_type": "place", "needs_verify": true,
+        "tool_needed": true, "tool": "search_web", "invoke_llm": true,
+        "high_stakes": false, "urgent": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "restaurant-2",
+      "text": "any good restaurants near me",
+      "partial": true,
+      "labels": {
+        "intent": "question", "is_question": true, "query_complexity": "simple",
+        "topic": "food", "entity_type": "place", "needs_verify": true,
+        "tool_needed": true, "tool": "search_web", "invoke_llm": true,
+        "high_stakes": false, "urgent": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "hotel-1",
+      "text": "I need to book a hotel for two nights in Pune",
+      "partial": false,
+      "labels": {
+        "intent": "statement", "is_question": false, "query_complexity": "standard",
+        "topic": "travel_places", "entity_type": "place", "needs_verify": true,
+        "tool_needed": true, "tool": "search_web", "invoke_llm": true,
+        "high_stakes": false, "urgent": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "trails-1",
+      "text": "tell me about good hiking trails near the city",
+      "partial": true,
+      "labels": {
+        "intent": "command", "is_question": false, "query_complexity": "complex",
+        "topic": "travel_places", "entity_type": "place", "needs_verify": true,
+        "tool_needed": true, "tool": "search_web", "invoke_llm": true,
+        "high_stakes": false, "urgent": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "rainy-day-1",
+      "text": "what are three good things to do on a rainy day inside the city",
+      "partial": true,
+      "labels": {
+        "intent": "question", "is_question": true, "query_complexity": "complex",
+        "topic": "travel_places", "entity_type": "other", "needs_verify": true,
+        "tool_needed": true, "tool": "search_web", "invoke_llm": true,
+        "high_stakes": false, "urgent": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "reminder-1",
+      "text": "set a reminder to call mom at six",
+      "partial": true,
+      "labels": {
+        "intent": "command", "is_question": false, "query_complexity": "standard",
+        "needs_verify": false,
+        "tool_needed": true, "tool": "set_reminder", "invoke_llm": false,
+        "high_stakes": false, "urgent": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "dice-1",
+      "text": "roll a dice for me",
+      "partial": true,
+      "labels": {
+        "intent": "command", "is_question": false, "query_complexity": "simple",
+        "needs_verify": false,
+        "tool_needed": true, "tool": "roll_dice", "invoke_llm": false,
+        "high_stakes": false, "urgent": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "statement-1",
+      "text": "I really enjoy hiking in the mountains",
+      "partial": true,
+      "labels": {
+        "intent": "statement", "is_question": false, "query_complexity": "standard",
+        "topic": "travel_places", "entity_type": "none", "needs_verify": false,
+        "tool_needed": false, "tool": "none", "invoke_llm": true,
+        "sentiment": "positive", "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "statement-2",
+      "text": "that is great news",
+      "partial": true,
+      "labels": {
+        "intent": "statement", "is_question": false, "query_complexity": "simple",
+        "invoke_llm": true, "sentiment": "positive", "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "frustration-1",
+      "text": "I am so frustrated right now",
+      "partial": true,
+      "labels": {
+        "intent": "statement", "is_question": false, "query_complexity": "simple",
+        "invoke_llm": true, "sentiment": "negative",
+        "urgent": true, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "frustration-2",
+      "text": "this is broken again",
+      "partial": true,
+      "labels": {
+        "intent": "statement", "is_question": false, "query_complexity": "simple",
+        "invoke_llm": true, "sentiment": "negative",
+        "urgent": true, "high_stakes": false, "needs_verify": true,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "correction-1",
+      "text": "no, I meant the other one",
+      "partial": true,
+      "labels": {
+        "intent": "correction", "is_question": false, "query_complexity": "simple",
+        "invoke_llm": true, "sentiment": "neutral", "urgent": false, "high_stakes": false,
+        "needs_verify": false, "tool_needed": false, "tool": "none",
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "correction-2",
+      "text": "that's not what I said",
+      "partial": true,
+      "labels": {
+        "intent": "correction", "is_question": false, "query_complexity": "simple",
+        "invoke_llm": true, "sentiment": "negative", "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "interrupt-1",
+      "text": "wait no that's not what I meant",
+      "partial": true,
+      "labels": {
+        "intent": "correction", "is_question": false, "query_complexity": "standard",
+        "invoke_llm": true, "sentiment": "negative", "urgent": true, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "disagreement"
+      }
+    },
+    {
+      "id": "interrupt-2",
+      "text": "no stop",
+      "partial": true,
+      "labels": {
+        "intent": "statement", "is_question": false,
+        "invoke_llm": true, "sentiment": "negative", "urgent": true, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "disagreement"
+      }
+    },
+    {
+      "id": "howto-1",
+      "text": "how does this work",
+      "partial": true,
+      "labels": {
+        "intent": "question", "is_question": true, "query_complexity": "complex",
+        "topic": "tech", "entity_type": "none", "needs_verify": false,
+        "tool_needed": false, "tool": "none", "invoke_llm": true,
+        "high_stakes": false, "urgent": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "howto-2",
+      "text": "explain the difference between arrays and lists",
+      "partial": true,
+      "labels": {
+        "intent": "command", "is_question": false, "query_complexity": "complex",
+        "topic": "tech", "entity_type": "none", "needs_verify": false,
+        "tool_needed": false, "tool": "none", "invoke_llm": true,
+        "high_stakes": false, "urgent": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "joke-1",
+      "text": "tell me a joke",
+      "partial": true,
+      "labels": {
+        "intent": "command", "is_question": false, "query_complexity": "simple",
+        "topic": "other", "entity_type": "none", "needs_verify": false,
+        "tool_needed": false, "tool": "none", "invoke_llm": true,
+        "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "howareyou-1",
+      "text": "how are you today",
+      "partial": true,
+      "labels": {
+        "intent": "question", "is_question": true, "query_complexity": "simple",
+        "topic": "smalltalk", "needs_verify": false,
+        "invoke_llm": true, "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "continuous-1",
+      "text": "what's my account balance",
+      "partial": true,
+      "labels": {
+        "intent": "question", "is_question": true, "query_complexity": "simple",
+        "entity_type": "other", "needs_verify": true,
+        "invoke_llm": true, "high_stakes": true, "urgent": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "health-1",
+      "text": "my chest hurts really badly",
+      "partial": true,
+      "labels": {
+        "intent": "statement", "is_question": false, "query_complexity": "simple",
+        "invoke_llm": true, "sentiment": "negative",
+        "urgent": true, "high_stakes": true, "escalate": true,
+        "needs_verify": false, "tool_needed": false, "tool": "none",
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "trip-plan-1",
+      "text": "can you recommend some places for a weekend trip",
+      "partial": true,
+      "labels": {
+        "intent": "question", "is_question": true, "query_complexity": "standard",
+        "topic": "travel_places", "entity_type": "place", "needs_verify": true,
+        "tool_needed": true, "tool": "search_web", "invoke_llm": true,
+        "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "trip-planner-1",
+      "text": "let's plan a trip to the mountains for my family",
+      "partial": true,
+      "labels": {
+        "intent": "command", "is_question": false, "query_complexity": "complex",
+        "topic": "travel_places", "needs_verify": false,
+        "tool_needed": false, "tool": "none", "invoke_llm": true,
+        "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "topic-shift-1",
+      "text": "forget the trip for a moment let's talk about artificial intelligence",
+      "partial": true,
+      "prev_intent": "statement",
+      "prev_topic": "travel_places",
+      "labels": {
+        "intent": "statement", "is_question": false, "query_complexity": "complex",
+        "topic_changed": true, "topic": "tech", "entity_type": "other", "needs_verify": false,
+        "tool_needed": false, "tool": "none", "invoke_llm": true,
+        "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "topic-shift-2",
+      "text": "I love learning about space travel",
+      "partial": true,
+      "prev_intent": "statement",
+      "prev_topic": "other",
+      "labels": {
+        "intent": "statement", "is_question": false, "query_complexity": "standard",
+        "topic_changed": false, "topic": "other", "entity_type": "none",
+        "needs_verify": false, "tool_needed": false, "tool": "none", "invoke_llm": true,
+        "sentiment": "positive", "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "continuation-1",
+      "text": "and also, the flight was late",
+      "partial": true,
+      "prev_intent": "statement",
+      "labels": {
+        "intent": "continuation", "is_question": false, "query_complexity": "standard",
+        "needs_verify": false, "invoke_llm": true, "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "continuation-2",
+      "text": "I really like that",
+      "partial": true,
+      "prev_intent": "statement",
+      "labels": {
+        "intent": "continuation", "is_question": false, "query_complexity": "simple",
+        "invoke_llm": true, "sentiment": "positive", "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "partial-list-1",
+      "text": "Is it the blue one or the red one, and",
+      "partial": true,
+      "labels": {
+        "intent": "question", "is_question": true, "query_complexity": "simple",
+        "needs_verify": false, "invoke_llm": true, "urgent": false, "high_stakes": false,
+        "turn_complete": false, "completion_conf": false, "barge_type": "none"
+      }
+    },
+    {
+      "id": "partial-list-2",
+      "text": "red, green, and",
+      "partial": true,
+      "labels": {
+        "intent": "statement", "is_question": false, "query_complexity": "simple",
+        "invoke_llm": true, "urgent": false, "high_stakes": false,
+        "turn_complete": false, "completion_conf": false, "barge_type": "none"
+      }
+    },
+    {
+      "id": "partial-list-3",
+      "text": "uh, um, well actually I think maybe a camping spot, or a cabin, or",
+      "partial": true,
+      "labels": {
+        "intent": "statement", "is_question": false, "query_complexity": "simple",
+        "invoke_llm": true, "urgent": false, "high_stakes": false,
+        "turn_complete": false, "completion_conf": false, "barge_type": "none"
+      }
+    },
+    {
+      "id": "partial-list-4",
+      "text": "We prefer nature and short hikes, and we also want",
+      "partial": true,
+      "labels": {
+        "intent": "statement", "is_question": false, "query_complexity": "standard",
+        "invoke_llm": true, "urgent": false, "high_stakes": false,
+        "turn_complete": false, "completion_conf": false, "barge_type": "none"
+      }
+    },
+    {
+      "id": "repeat-1",
+      "text": "can you repeat that",
+      "partial": true,
+      "labels": {
+        "intent": "question", "is_question": true, "query_complexity": "simple",
+        "needs_verify": false, "invoke_llm": true, "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "thanks-1",
+      "text": "thanks so much",
+      "partial": true,
+      "labels": {
+        "intent": "backchannel", "is_question": false, "query_complexity": "simple",
+        "invoke_llm": false, "sentiment": "positive", "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "backchannel"
+      }
+    },
+    {
+      "id": "moment-1",
+      "text": "give me a moment",
+      "partial": true,
+      "prev_intent": "statement",
+      "labels": {
+        "intent": "command", "is_question": false, "query_complexity": "simple",
+        "invoke_llm": true, "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "battery-1",
+      "text": "my battery is at 3 percent",
+      "partial": true,
+      "labels": {
+        "intent": "statement", "is_question": false,
+        "invoke_llm": true, "urgent": false, "high_stakes": false, "needs_verify": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "money-1",
+      "text": "we want to keep it under six thousand rupees",
+      "partial": true,
+      "labels": {
+        "intent": "statement", "is_question": false, "query_complexity": "standard",
+        "invoke_llm": true, "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "people-1",
+      "text": "actually we're five people now",
+      "partial": true,
+      "labels": {
+        "intent": "statement", "is_question": false, "query_complexity": "simple",
+        "invoke_llm": true, "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    },
+    {
+      "id": "greeeting-weather-1",
+      "text": "hello, what's the weather today",
+      "partial": true,
+      "labels": {
+        "intent": "question", "is_question": true, "query_complexity": "simple",
+        "topic": "weather", "entity_type": "place", "needs_verify": true,
+        "tool_needed": true, "tool": "get_weather", "invoke_llm": true,
+        "urgent": false, "high_stakes": false,
+        "turn_complete": true, "completion_conf": true, "barge_type": "none"
+      }
+    }
+  ]
+}

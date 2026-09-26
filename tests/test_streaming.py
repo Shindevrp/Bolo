@@ -18,6 +18,19 @@ class FakeSTT:
         return ""
 
 
+class FakeSTTCalls:
+    """Returns empty until *target* calls, then *text*."""
+
+    def __init__(self, text: str, target: int = 0) -> None:
+        self.text = text
+        self.target = target
+        self.calls = 0
+
+    async def transcribe(self, audio_blob: bytes) -> str:
+        self.calls += 1
+        return self.text if self.calls > self.target else ""
+
+
 class FakeLLM:
     async def generate_stream(self, messages):
         if False:
@@ -714,6 +727,74 @@ class TestAcousticEchoFloor:
             await asyncio.gather(loop_task, col_task, return_exceptions=True)
 
             assert (PipelineEvent.INTERRUPT, "sess") not in seen
+
+        asyncio.run(run())
+
+    def test_soft_barge_fires_on_novel_speech_below_raised_floor(self) -> None:
+        """A real voice below the echo-raised gate must interrupt when the
+        probe content is novel (the reported "TTS plays the whole response"
+        failure mode: echo-floor lift blocking break-in speech)."""
+        async def run() -> None:
+            p = _make_pipeline()
+            p.stt = FakeSTTCalls("no that is wrong", target=2)
+            p.vad = EchoVAD(value=2000)
+            p._playback_active["sess"] = True
+            p._playback_onset["sess"] = time.monotonic() - 5.0
+            p._echo_floor["sess"] = 0.15
+            p._ctx("sess").dialogue_state = DialogueState.IDLE
+
+            p._running = True
+            loop_task = asyncio.create_task(p._pipeline_loop())
+            seen: list[tuple[PipelineEvent, str]] = []
+
+            async def collect() -> None:
+                async for msg in p.output_stream():
+                    seen.append((msg.event, msg.session_id))
+
+            col_task = asyncio.create_task(collect())
+            # energy 0.122: above base (0.01), below raised (0.225) -> soft path
+            for _ in range(5):
+                await p.push_audio(_const_energy_chunk(4000), "sess")
+            await asyncio.sleep(0.2)
+            p._running = False
+            loop_task.cancel()
+            await asyncio.gather(loop_task, col_task, return_exceptions=True)
+
+            assert (PipelineEvent.INTERRUPT, "sess") in seen
+
+        asyncio.run(run())
+
+    def test_soft_barge_keeps_echo_of_current_response(self) -> None:
+        """Speaker bleed whose transcript matches the sentence currently being
+        spoken must NOT barge even when it would clear the capping sensitivity."""
+        async def run() -> None:
+            p = _make_pipeline()
+            p.stt = FakeSTTCalls("it is about three o'clock and a quarter")
+            p.vad = EchoVAD(value=2000)
+            p._playback_active["sess"] = True
+            p._playback_onset["sess"] = time.monotonic() - 5.0
+            p._echo_floor["sess"] = 0.15
+            p._speaking_text["sess"] = "It is about three o'clock and a quarter."
+            p._ctx("sess").dialogue_state = DialogueState.IDLE
+
+            p._running = True
+            loop_task = asyncio.create_task(p._pipeline_loop())
+            seen: list[tuple[PipelineEvent, str]] = []
+
+            async def collect() -> None:
+                async for msg in p.output_stream():
+                    seen.append((msg.event, msg.session_id))
+
+            col_task = asyncio.create_task(collect())
+            for _ in range(4):
+                await p.push_audio(_const_energy_chunk(4000), "sess")
+            await asyncio.sleep(0.2)
+            p._running = False
+            loop_task.cancel()
+            await asyncio.gather(loop_task, col_task, return_exceptions=True)
+
+            assert (PipelineEvent.INTERRUPT, "sess") not in seen
+            assert p._playback_active.get("sess") is True
 
         asyncio.run(run())
 
