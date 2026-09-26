@@ -9,3 +9,9 @@ venv/
 .DS_Store
 models/
 videos/
+
+# secrets / local config
+.env
+.venv
+models
+venv
