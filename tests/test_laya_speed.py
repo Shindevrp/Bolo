@@ -255,22 +255,173 @@ class TestToolPrefetch:
         p._tool_registry = registry  # type: ignore[assignment]
         return p, llm, registry
 
-    def test_prefetch_stashes_and_seeds_prompt(self) -> None:
+    def test_paid_prefetch_waits_for_pause_then_seeds_prompt(self) -> None:
         async def run() -> None:
             p, llm, registry = self._pipeline()
             ctx = p._ctx("sess")
             await p._partial_transcribe(b"\x00" * 1600, "sess", ctx)
             await asyncio.sleep(0.05)
-            entry = p._s1_prefetch.get("sess")
-            assert entry is not None
-            assert entry["tool"] == "search_web"
-            assert entry["result"] == "Prefetched lookup result"
+            # search_web costs a credit: the vote is only a candidate so far.
+            assert registry.calls == []
+            assert "sess" not in p._s1_prefetch
+
+            p._start_paid_prefetch("sess", ctx)  # the user paused
+
+            await asyncio.sleep(0)
             assert registry.calls == [{"name": "search_web", "args": ["who is nikola tesla"]}]
 
             await _run_turn(p, ctx=ctx)
-            # Consumed and cleared by the turn.
             assert "sess" not in p._s1_prefetch
             assert any(
+                "Prefetched lookup result" in m.get("content", "")
+                for m in llm.messages
+            )
+
+        asyncio.run(run())
+
+    def test_paid_prefetch_runs_once_per_utterance(self) -> None:
+        """A changing partial must not re-spend a SerpApi credit within the
+        same utterance; the next utterance gets a fresh one."""
+
+        async def run() -> None:
+            p, _, registry = self._pipeline()
+            ctx = p._ctx("sess")
+            for text in ("who is nikola", "who is nikola tesla"):
+                ctx.last_partial_transcript = text
+                await p._prefetch_probe(text, "sess")
+                p._start_paid_prefetch("sess", ctx)
+                await asyncio.sleep(0)
+            ctx.last_partial_transcript = "who is nikola tesla anyway"
+            await p._prefetch_probe(ctx.last_partial_transcript, "sess")
+            p._start_paid_prefetch("sess", ctx)
+            await asyncio.sleep(0)
+            assert len(registry.calls) == 1
+
+            p._bump_generation("sess")
+            ctx.last_partial_transcript = "who is ada lovelace"
+            await p._prefetch_probe(ctx.last_partial_transcript, "sess")
+            p._start_paid_prefetch("sess", ctx)
+            await asyncio.sleep(0)
+            assert len(registry.calls) == 2
+
+        asyncio.run(run())
+
+    def test_paid_prefetch_extends_vote_to_refreshed_partial(self) -> None:
+        """The endpointer's sync refresh runs no Laya probe; a partial that
+        only extends the voted one keeps the vote and searches the full text."""
+
+        async def run() -> None:
+            p, _, registry = self._pipeline()
+            ctx = p._ctx("sess")
+            await p._prefetch_probe("who is nikola", "sess")
+            ctx.last_partial_transcript = "who is Nikola Tesla?"
+            p._start_paid_prefetch("sess", ctx)
+            await asyncio.sleep(0)
+            assert registry.calls == [{"name": "search_web", "args": ["who is Nikola Tesla"]}]
+            assert p._s1_prefetch["sess"]["partial"] == "who is Nikola Tesla?"
+
+        asyncio.run(run())
+
+    def test_paid_prefetch_skips_diverged_vote(self) -> None:
+        async def run() -> None:
+            p, _, registry = self._pipeline()
+            ctx = p._ctx("sess")
+            await p._prefetch_probe("who is nikola tesla", "sess")
+            ctx.last_partial_transcript = "who is ada lovelace"
+            p._start_paid_prefetch("sess", ctx)
+            await asyncio.sleep(0)
+            assert registry.calls == []
+
+        asyncio.run(run())
+
+    def test_looks_unfinished(self) -> None:
+        unfinished = StreamingPipeline._looks_unfinished
+        for text in ("find me flights to", "biryani near", "flights from Delhi to Goa um",
+                     "hotels in", "book me a", "red, blue,", ""):
+            assert unfinished(text), text
+        for text in ("who is nikola tesla", "what's the weather like",
+                     "flights to Goa?", "who said that", "is the match over"):
+            assert not unfinished(text), text
+
+    def test_pause_in_audio_loop_fires_only_when_complete(self) -> None:
+        from core.pipeline import FRAME_BYTES
+        from tests.test_vad_endpoint import ScriptedVAD
+
+        async def pause_after(partial: str) -> list:
+            p, _, registry = self._pipeline()
+            p.vad = ScriptedVAD(4)  # ~512 ms speech, then silence
+            ctx = p._ctx("sess")
+            p._running = True
+            loop_task = asyncio.create_task(p._pipeline_loop())
+            for _ in range(4):
+                await p.push_audio(b"\x01" * FRAME_BYTES, "sess")
+            await asyncio.sleep(0.1)
+            # Mid-speech: the partial so far, and Laya's vote on it.
+            ctx.last_partial_transcript = partial
+            p._s1_prefetch_candidate["sess"] = {
+                "gen": p._generation("sess"),
+                "partial": partial,
+                "tool": "search_web",
+                "args": [partial],
+            }
+            for _ in range(3):  # ~384 ms of silence: a pause, not an endpoint
+                await p.push_audio(b"\x01" * FRAME_BYTES, "sess")
+            await asyncio.sleep(0.2)
+            p._running = False
+            loop_task.cancel()
+            await asyncio.gather(loop_task, return_exceptions=True)
+            return registry.calls
+
+        async def run() -> None:
+            assert await pause_after("who is nikola tesla")
+            assert not await pause_after("find me flights to")
+
+        asyncio.run(run())
+
+    def test_turn_awaits_slow_matching_prefetch(self) -> None:
+        async def run() -> None:
+            p, llm, registry = self._pipeline()
+            release = asyncio.Event()
+            fast = registry.execute_call
+
+            async def slow(call):
+                await release.wait()
+                return await fast(call)
+
+            registry.execute_call = slow  # type: ignore[method-assign]
+            ctx = p._ctx("sess")
+            ctx.last_partial_transcript = "who is nikola tesla"
+            await p._prefetch_probe(ctx.last_partial_transcript, "sess")
+            p._start_paid_prefetch("sess", ctx)
+            await asyncio.sleep(0)
+            asyncio.get_running_loop().call_later(0.1, release.set)
+            await _run_turn(p, ctx=ctx)
+            assert any(
+                "Prefetched lookup result" in m.get("content", "")
+                for m in llm.messages
+            )
+
+        asyncio.run(run())
+
+    def test_turn_does_not_wait_for_mismatched_prefetch(self) -> None:
+        async def run() -> None:
+            p, llm, registry = self._pipeline()
+            never = asyncio.Event()
+
+            async def hang(call):
+                registry.calls.append(call)
+                await never.wait()
+
+            registry.execute_call = hang  # type: ignore[method-assign]
+            ctx = p._ctx("sess")
+            ctx.last_partial_transcript = "who is ada lovelace"
+            await p._prefetch_probe(ctx.last_partial_transcript, "sess")
+            p._start_paid_prefetch("sess", ctx)
+            await asyncio.sleep(0)
+            assert len(registry.calls) == 1
+            # FixedSTT hears "who is nikola tesla": not what was prefetched.
+            await asyncio.wait_for(_run_turn(p, ctx=ctx), 2.0)
+            assert not any(
                 "Prefetched lookup result" in m.get("content", "")
                 for m in llm.messages
             )

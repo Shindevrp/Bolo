@@ -7,7 +7,11 @@ HTTP API doesn't give a voice agent:
 - an in-memory TTL cache, so a follow-up ("and tomorrow?") or a prefetch
   that already ran never spends a second credit on the same query;
 - a credit counter with a cap (free tier = 250 searches/month), so a runaway
-  prefetch loop can't burn the month's quota.
+  prefetch loop can't burn the month's quota;
+- in-flight de-duplication, a short negative cache for empty results (so the
+  registry's retry doesn't spend a second credit), and a kill switch on
+  fatal account errors (bad key, out of searches);
+- one keep-alive HTTP connection, so only the first search pays for TLS.
 
 Failures raise ``SerpApiError`` whose message starts with "Search failed:"
 (or "Unable" when the client is disabled), so a tool that returns
@@ -20,11 +24,13 @@ Set ``SERPAPI_RECORD_DIR`` to save every live response as a JSON fixture
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
 import re
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +44,12 @@ SERPAPI_URL = "https://serpapi.com/search.json"
 DEFAULT_TIMEOUT_S = 5.0
 DEFAULT_CACHE_TTL_S = 15 * 60
 DEFAULT_CREDIT_CAP = 200
+NEGATIVE_CACHE_TTL_S = 5 * 60
+CACHE_MAX_ENTRIES = 256
+
+# Account-level errors: any further search can only fail again. (A 429 rate
+# limit is transient and deliberately not listed.)
+_FATAL_ERRORS = ("invalid api key", "run out of searches", "searches for the month")
 
 
 class SerpApiError(Exception):
@@ -46,6 +58,12 @@ class SerpApiError(Exception):
 
 class SerpApiUnavailable(SerpApiError):
     """No key configured or the credit cap is reached -- use a fallback."""
+
+
+def normalize_query(q: str) -> str:
+    """Case/spacing/trailing-punctuation-insensitive query, so "Goa?" and
+    "goa" share one cache entry (ours and SerpApi's free 1 h cache)."""
+    return " ".join(q.split()).strip("?.!,").strip().lower()
 
 
 def fixture_name(engine: str, params: dict[str, Any]) -> str:
@@ -75,9 +93,17 @@ class SerpApiClient:
         self.credit_cap = credit_cap
         self.record_dir = Path(record_dir).expanduser() if record_dir else None
         self._transport = transport
-        self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        # key -> (stored_at, data | SerpApiError); errors are negative entries.
+        self._cache: OrderedDict[str, tuple[float, dict[str, Any] | SerpApiError]] = (
+            OrderedDict()
+        )
+        self._inflight: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._http: httpx.AsyncClient | None = None
+        self._http_loop: asyncio.AbstractEventLoop | None = None
+        self.disabled_reason = ""
         self.credits_used = 0
         self.cache_hits = 0
+        self.dedup_hits = 0
 
     @classmethod
     def from_env(cls, **kw: Any) -> "SerpApiClient":
@@ -99,7 +125,32 @@ class SerpApiClient:
 
     @property
     def available(self) -> bool:
-        return self.enabled and self.credits_left > 0
+        return self.enabled and self.credits_left > 0 and not self.disabled_reason
+
+    def stats(self) -> dict[str, Any]:
+        """Counters for benchmarks and the UI."""
+        return {
+            "credits_used": self.credits_used,
+            "credits_left": self.credits_left,
+            "cache_hits": self.cache_hits,
+            "dedup_hits": self.dedup_hits,
+            "disabled_reason": self.disabled_reason,
+        }
+
+    def _http_client(self) -> httpx.AsyncClient:
+        """One keep-alive client per event loop (a client can't cross loops)."""
+        loop = asyncio.get_running_loop()
+        if self._http is None or self._http_loop is not loop or self._http.is_closed:
+            self._http = httpx.AsyncClient(
+                timeout=self.timeout, transport=self._transport
+            )
+            self._http_loop = loop
+        return self._http
+
+    async def aclose(self) -> None:
+        if self._http is not None and not self._http.is_closed:
+            await self._http.aclose()
+        self._http = None
 
     @staticmethod
     def _cache_key(engine: str, params: dict[str, Any]) -> str:
@@ -109,30 +160,58 @@ class SerpApiClient:
         """Run one SerpApi search and return its JSON.
 
         ``None`` params are dropped, so callers can pass optional fields
-        straight through. Cached results cost no credit.
+        straight through. Cached results -- and a concurrent identical
+        request -- cost no credit. Empty results are cached briefly too.
         """
         params = {k: v for k, v in params.items() if v is not None and v != ""}
+        if isinstance(params.get("q"), str):
+            params["q"] = normalize_query(params["q"])
         key = self._cache_key(engine, params)
+
         hit = self._cache.get(key)
-        if hit and time.monotonic() - hit[0] < self.cache_ttl:
-            self.cache_hits += 1
-            return hit[1]
+        if hit:
+            stored_at, value = hit
+            ttl = NEGATIVE_CACHE_TTL_S if isinstance(value, SerpApiError) else self.cache_ttl
+            if time.monotonic() - stored_at < min(ttl, self.cache_ttl):
+                self._cache.move_to_end(key)
+                self.cache_hits += 1
+                if isinstance(value, SerpApiError):
+                    raise SerpApiError(str(value))
+                return value
+            del self._cache[key]
 
-        if not self.enabled:
-            raise SerpApiUnavailable("Unable to search: no SerpApi key configured")
-        if self.credits_left <= 0:
-            raise SerpApiUnavailable(
-                f"Unable to search: SerpApi credit cap ({self.credit_cap}) reached"
-            )
+        task = self._inflight.get(key)
+        if task is not None and not task.done():
+            self.dedup_hits += 1
+        else:
+            if not self.enabled:
+                raise SerpApiUnavailable("Unable to search: no SerpApi key configured")
+            if self.disabled_reason:
+                raise SerpApiUnavailable(f"Unable to search: {self.disabled_reason}")
+            if self.credits_left <= 0:
+                raise SerpApiUnavailable(
+                    f"Unable to search: SerpApi credit cap ({self.credit_cap}) reached"
+                )
+            # The fetch is its own task: a cancelled caller (a prefetch at
+            # speech-end) neither kills it for a concurrent waiter nor wastes
+            # the credit -- the result still lands in the cache.
+            task = asyncio.ensure_future(self._fetch(engine, params, key))
+            self._inflight[key] = task
+            task.add_done_callback(lambda t, k=key: self._settle(k, t))
+        return await asyncio.shield(task)
 
+    def _settle(self, key: str, task: asyncio.Future[dict[str, Any]]) -> None:
+        if self._inflight.get(key) is task:
+            del self._inflight[key]
+        if not task.cancelled():
+            task.exception()  # retrieved: every caller may have gone away
+
+    async def _fetch(self, engine: str, params: dict[str, Any], key: str) -> dict[str, Any]:
         query = {"engine": engine, **params, "api_key": self.api_key}
         self.credits_used += 1
         start = time.perf_counter()
         try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, transport=self._transport
-            ) as http:
-                resp = await http.get(SERPAPI_URL, params=query)
+            resp = await self._http_client().get(SERPAPI_URL, params=query)
             data = resp.json()
         except httpx.TimeoutException:
             raise SerpApiError(
@@ -151,16 +230,29 @@ class SerpApiClient:
         err = data.get("error")
         if err:
             # "Google hasn't returned any results for this query." is a real
-            # empty result, not a failure -- still report it as bad data.
+            # empty result: cache it briefly so a retry doesn't re-spend.
             if "hasn't returned any results" in str(err):
-                raise SerpApiError(f"No results found for: {params.get('q', engine)}")
+                empty = SerpApiError(f"No results found for: {params.get('q', engine)}")
+                self._store(key, empty)
+                raise empty
+            if resp.status_code in (401, 403) or any(
+                f in str(err).lower() for f in _FATAL_ERRORS
+            ):
+                self.disabled_reason = str(err)
+                logger.warning(f"serpapi disabled: {err}")
             raise SerpApiError(f"Search failed: {err}")
         if resp.status_code >= 400:
             raise SerpApiError(f"Search failed: HTTP {resp.status_code}")
 
-        self._cache[key] = (time.monotonic(), data)
+        self._store(key, data)
         self._record(engine, params, data)
         return data
+
+    def _store(self, key: str, value: dict[str, Any] | SerpApiError) -> None:
+        self._cache[key] = (time.monotonic(), value)
+        self._cache.move_to_end(key)
+        while len(self._cache) > CACHE_MAX_ENTRIES:
+            self._cache.popitem(last=False)
 
     def _record(self, engine: str, params: dict[str, Any], data: dict[str, Any]) -> None:
         if not self.record_dir:

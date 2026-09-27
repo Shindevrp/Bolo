@@ -21,6 +21,7 @@ from providers.search.serpapi import (
     SerpApiError,
     SerpApiUnavailable,
     fixture_name,
+    normalize_query,
     set_client,
 )
 
@@ -37,7 +38,7 @@ def _index() -> dict[tuple[str, str], dict]:
     for path in FIXTURES.glob("*.json"):
         data = json.loads(path.read_text())
         sp = data["search_parameters"]
-        out[(sp["engine"], sp.get("q", ""))] = data
+        out[(sp["engine"], normalize_query(sp.get("q", "")))] = data
     return out
 
 
@@ -155,11 +156,101 @@ class TestClient:
         client, _ = _client(Replay(body), record_dir=tmp_path)
         run(client.search("google", q="Hello World"))
         files = list(tmp_path.glob("*.json"))
-        assert [f.name for f in files] == [fixture_name("google", {"q": "Hello World"})]
+        assert [f.name for f in files] == [fixture_name("google", {"q": "hello world"})]
         saved = json.loads(files[0].read_text())
         assert "search_metadata" not in saved
-        assert saved["search_parameters"] == {"engine": "google", "q": "Hello World"}
+        assert saved["search_parameters"] == {"engine": "google", "q": "hello world"}
         assert "test-key" not in files[0].read_text()
+
+    def test_query_normalisation_shares_one_credit(self) -> None:
+        client, replay = _client()
+        run(client.search("google", q="Best time to visit Goa?"))
+        run(client.search("google", q="  best  time to visit goa "))
+        assert len(replay.requests) == 1
+        assert replay.requests[0]["q"] == "best time to visit goa"
+
+    def test_empty_result_is_negatively_cached(self) -> None:
+        client, replay = _client()
+        for _ in range(2):
+            with pytest.raises(SerpApiError, match="No results found"):
+                run(client.search("google", q="zxqv nonsense query"))
+        assert len(replay.requests) == 1
+        assert client.credits_used == 1
+
+    def test_fatal_error_disables_client(self) -> None:
+        client, replay = _client(Replay({"error": "Your account has run out of searches."}))
+        with pytest.raises(SerpApiError):
+            run(client.search("google", q="a"))
+        assert not client.available
+        with pytest.raises(SerpApiUnavailable):
+            run(client.search("google", q="b"))
+        assert len(replay.requests) == 1
+
+    def test_rate_limit_is_not_fatal(self) -> None:
+        client, _ = _client(Replay({"error": "Rate limit exceeded for account."}, status=429))
+        with pytest.raises(SerpApiError):
+            run(client.search("google", q="a"))
+        assert client.available
+
+    def test_concurrent_identical_requests_share_one_call(self) -> None:
+        client, replay = _client()
+
+        async def both():
+            return await asyncio.gather(
+                client.search("google", q="best time to visit goa"),
+                client.search("google", q="Best time to visit Goa"),
+            )
+
+        a, b = run(both())
+        assert a is b
+        assert len(replay.requests) == 1
+        assert client.dedup_hits == 1
+
+    def test_cancelled_caller_does_not_cancel_shared_fetch(self) -> None:
+        release = asyncio.Event()
+
+        class Slow(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                await release.wait()
+                return httpx.Response(200, json={"organic_results": [{"title": "t"}]})
+
+        client = SerpApiClient("k", transport=Slow())
+
+        async def scenario():
+            prefetch = asyncio.create_task(client.search("google", q="x"))
+            await asyncio.sleep(0)
+            turn = asyncio.create_task(client.search("google", q="x"))
+            await asyncio.sleep(0)
+            prefetch.cancel()  # speech-end cancels the prefetch probe
+            release.set()
+            data = await turn
+            return data, prefetch
+
+        data, prefetch = run(scenario())
+        assert data["organic_results"][0]["title"] == "t"
+        assert prefetch.cancelled()
+        assert client.credits_used == 1
+
+    def test_connection_is_reused(self) -> None:
+        client, _ = _client()
+
+        async def two():
+            await client.search("google", q="best time to visit goa")
+            first = client._http
+            await client.search("google", q="who is aravind srinivas")
+            assert client._http is first
+            await client.aclose()
+
+        run(two())
+
+    def test_cache_is_bounded(self, monkeypatch) -> None:
+        from providers.search import serpapi
+
+        monkeypatch.setattr(serpapi, "CACHE_MAX_ENTRIES", 2)
+        client, _ = _client(Replay({"organic_results": []}))
+        for q in ("a", "b", "c"):
+            run(client.search("google", q=q))
+        assert len(client._cache) == 2
 
     def test_from_env(self, monkeypatch) -> None:
         monkeypatch.setenv("SERPAPI_API_KEY", " k ")
@@ -293,7 +384,7 @@ class TestSearchPlaces:
         assert parts[0].startswith("Paradise Biryani, 4.1 stars (98,213 reviews)")
         assert "Fourth Place" not in out
         assert serp.requests[0]["engine"] == "google_maps"
-        assert serp.requests[0]["q"] == "biryani in Hyderabad"
+        assert serp.requests[0]["q"] == "biryani in hyderabad"
 
     def test_single_place_result(self, serp) -> None:
         out = run(local.search_places("gateway of india"))

@@ -53,6 +53,29 @@ from utils.logger import get_logger
 logger = get_logger("pipeline")
 
 ECHO_GRACE_SECONDS = 0.35
+
+# Prefetchable tools that spend a SerpApi credit per call. They are not run
+# on every partial (the transcript is still changing); Laya's vote is kept as
+# a candidate and fired once the user pauses, when the partial is most
+# likely the final text -- at most once per utterance.
+_PAID_PREFETCH_TOOLS = frozenset({"search_web"})
+_PAID_PREFETCH_PAUSE_MS = 200.0
+# How long a turn waits for an in-flight paid prefetch that matches what the
+# user said. Waiting beats the alternative (LLM -> tool call -> same search).
+_PAID_PREFETCH_WAIT_S = 4.0
+# A pause after one of these is the speaker searching for the next word
+# ("find flights to... um... Goa"), not the end of the question -- don't
+# spend the utterance's one credit on it. Stricter than the endpointer's
+# is_incomplete (which only has to avoid cutting the user off).
+# Words that can also end a complete question ("what's the weather like",
+# "who said that", "is it over") are deliberately left out.
+_DANGLING_WORDS = frozenset({
+    "a", "an", "the", "my", "some",
+    "to", "from", "in", "at", "for", "of", "with", "near", "about",
+    "via", "into", "between", "than",
+    "and", "or", "but", "if", "because",
+    "um", "uh", "er", "hmm",
+})
 ECHO_FLOOR_MARGIN = 1.5
 
 # During playback the barge energy gate is raised above the acoustic echo
@@ -291,6 +314,11 @@ class StreamingPipeline:
         self._pending_turn_rows: dict[str, dict] = {}
         self._s1_prefetch_inflight: dict[str, bool] = {}
         self._s1_prefetch_tasks: dict[str, asyncio.Task] = {}
+        # Paid (SerpApi) prefetch: Laya's latest tool vote on a partial, fired
+        # at the next pause; and the generation (utterance) that already
+        # spent its one credit -- partials change many times per utterance.
+        self._s1_prefetch_candidate: dict[str, dict] = {}
+        self._s1_prefetch_paid_gen: dict[str, int] = {}
         # Monotonic timestamps of the last SPEECH_END emit, for the true
         # end-to-end "user stopped talking -> first audio out" metric.
         self._speech_end_ts: dict[str, float] = {}
@@ -789,6 +817,7 @@ class StreamingPipeline:
                     # utterance: its generation tag would be stale and an
                     # in-flight Laya probe only steals GPU in a reply window.
                     self._s1_prefetch.pop(sid, None)
+                    self._s1_prefetch_candidate.pop(sid, None)
                     self._s1_prefetch_inflight.pop(sid, None)
                     pf = self._s1_prefetch_tasks.pop(sid, None)
                     if pf and not pf.done():
@@ -970,6 +999,17 @@ class StreamingPipeline:
                     trajectory = self.turn_detector.prosody_analyzer.analyze().get(
                         "trajectory", "neutral"
                     )
+
+                    # Paid prefetch fires on a pause that sounds like the end
+                    # of the question (after the refresh above, so it sees
+                    # the freshest partial), never on a mid-sentence one.
+                    if (
+                        silence_ms >= _PAID_PREFETCH_PAUSE_MS
+                        and not incomplete
+                        and trajectory != "rising"
+                        and not self._looks_unfinished(ctx.last_partial_transcript)
+                    ):
+                        self._start_paid_prefetch(sid, ctx)
 
                     endpoint_ms = self.endpoint_normal_ms
                     if incomplete or trajectory == "rising":
@@ -1405,6 +1445,7 @@ class StreamingPipeline:
             spec_task: asyncio.Task | None = None
 
             if partial and len(partial.split()) >= 2:
+                prefetch = await self._resolve_prefetch(prefetch, partial, stt_task)
                 spec_messages = await self._build_messages(
                     partial, ctx, memory, retrieval,
                     facts=self._facts.get(session_id),
@@ -1574,6 +1615,7 @@ class StreamingPipeline:
                     spec_task.cancel()
 
                 if fast_reply is None:
+                    prefetch = await self._resolve_prefetch(prefetch, transcript)
                     messages = await self._build_messages(
                         transcript, ctx, memory, retrieval,
                         facts=self._facts.get(session_id),
@@ -2510,7 +2552,7 @@ class StreamingPipeline:
         """A prefetched tool result, only if it still answers *text*. Time,
         date and dice don't depend on the wording; a web search or a
         calculation must match what the user actually said."""
-        if not entry:
+        if not entry or "task" in entry:
             return None
         tool = entry.get("tool")
         if tool == "search_web":
@@ -2541,6 +2583,107 @@ class StreamingPipeline:
             return None
         return entry
 
+    def _start_paid_prefetch(self, session_id: str, ctx: ConversationContext) -> None:
+        """Fire the paid-tool candidate once the user pauses.
+
+        Only when Laya's vote was on the partial the user paused on (so the
+        search is for what they actually said), and only once per utterance.
+        The search runs as its own task: speech-end does not cancel it (it is
+        network I/O, not GPU), and the turn awaits it if the final
+        transcript still matches (see ``_resolve_prefetch``).
+        """
+        cand = self._s1_prefetch_candidate.get(session_id)
+        generation = self._generation(session_id)
+        if (
+            not cand
+            or cand["gen"] != generation
+            or self._s1_prefetch_paid_gen.get(session_id) == generation
+        ):
+            return
+        current = ctx.last_partial_transcript
+        if current != cand["partial"]:
+            # The partial moved on since Laya voted (a newer partial, or the
+            # endpointer's sync refresh, which runs no probe). A pure
+            # extension ("who is nikola" -> "who is nikola tesla") keeps the
+            # vote; search the full text. Anything else is a stale vote.
+            voted = self._words(cand["partial"])
+            if self._words(current)[: len(voted)] != voted:
+                return
+            args = self._prefetch_args(current, cand["tool"])
+            if args is None:
+                return
+            cand = {**cand, "partial": current, "args": args}
+        self._s1_prefetch_paid_gen[session_id] = generation
+        self._s1_prefetch_candidate.pop(session_id, None)
+
+        async def _run() -> dict | None:
+            try:
+                out = await self._tool_registry.execute_call(
+                    {"name": cand["tool"], "args": cand["args"]}
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"paid prefetch failed: {e!r}")
+                return None
+            result = str(out.get("result", ""))
+            if ToolRegistry._result_is_bad(result):
+                return None
+            return {**cand, "result": result}
+
+        self._s1_prefetch[session_id] = {**cand, "task": asyncio.create_task(_run())}
+        logger.debug(
+            f"paid prefetch session={session_id} tool={cand['tool']} "
+            f"partial={cand['partial']!r}"
+        )
+
+    @staticmethod
+    def _looks_unfinished(text: str) -> bool:
+        """True when *text* trails off mid-phrase ("flights to", "the")."""
+        words = text.strip().rstrip(",.").split()
+        if not words or text.strip().endswith((",", "...")):
+            return True
+        return words[-1].lower().strip("?!") in _DANGLING_WORDS
+
+    async def _resolve_prefetch(
+        self,
+        entry: dict | None,
+        text: str,
+        stt_task: asyncio.Task | None = None,
+    ) -> dict | None:
+        """Settle an in-flight paid prefetch for *text*.
+
+        A finished (or free-tool) entry is returned as is. A pending one is
+        awaited -- bounded by ``_PAID_PREFETCH_WAIT_S`` -- only when it was
+        started for these exact words; otherwise it stays pending and
+        ``_prefetch_for`` ignores it. With *stt_task* (the speculative path,
+        before the final transcript exists), waiting stops early if the final
+        transcript lands first and differs from *text*.
+        """
+        if not entry or "task" not in entry:
+            return entry
+        if self._words(entry.get("partial", "")) != self._words(text):
+            return entry
+        task: asyncio.Task = entry["task"]
+        start = time.perf_counter()
+        try:
+            if stt_task is not None and not task.done():
+                await asyncio.wait(
+                    {task, stt_task},
+                    timeout=_PAID_PREFETCH_WAIT_S,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not task.done() and stt_task.done():
+                    heard = None
+                    if not stt_task.cancelled() and stt_task.exception() is None:
+                        heard = stt_task.result()
+                    if heard is not None and self._words(heard) != self._words(text):
+                        return entry
+            remaining = _PAID_PREFETCH_WAIT_S - (time.perf_counter() - start)
+            return await asyncio.wait_for(asyncio.shield(task), max(0.0, remaining))
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+            return None
+        finally:
+            self._latency.measure("prefetch_wait", start)
+
     @staticmethod
     def _prefetch_args(partial: str, tool: str) -> list[str] | None:
         """Conservative args for a prefetched tool call.
@@ -2570,7 +2713,9 @@ class StreamingPipeline:
         (with the utterance's generation tag) for ``_consume_prefetch`` to feed
         the LLM's first prompt. ``priority=False`` keeps the call out of the
         model's face while the user speaks; the task is cancelled at
-        speech-end, so a worst-case miss costs exactly one wasted lookup.
+        speech-end. A paid (SerpApi) tool is only recorded as a candidate
+        here -- see ``_start_paid_prefetch`` -- so a worst-case miss costs
+        exactly one wasted credit per utterance.
         """
         s1 = self._s1
         try:
@@ -2602,6 +2747,16 @@ class StreamingPipeline:
                 return
             args = self._prefetch_args(partial, tool)
             if args is None:
+                return
+            if tool in _PAID_PREFETCH_TOOLS:
+                # Don't spend a credit on a transcript that is still moving:
+                # remember the vote; _start_paid_prefetch fires it on a pause.
+                self._s1_prefetch_candidate[session_id] = {
+                    "gen": generation,
+                    "partial": partial,
+                    "tool": tool,
+                    "args": args,
+                }
                 return
             out = await self._tool_registry.execute_call({"name": tool, "args": args})
             result = str(out.get("result", ""))
