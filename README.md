@@ -1,32 +1,47 @@
 <div align="center">
-<div style="width:100%; max-width:880px; margin:0 auto; border:1px solid #21262d; border-radius:18px; overflow:hidden; background:#0d1117;">
-<div style="height:4px; background:#58a6ff;"></div>
-<div style="padding:32px 28px 20px;">
-<p style="font-size:44px; font-weight:700; color:#e6edf3; margin:0; letter-spacing:-1px;">Bolo</p>
-<p style="font-size:13px; color:#8b949e; margin:6px 0 0; font-family:ui-monospace,SFMono-Regular,monospace;">बोलते ही सोचता है &middot; searches while you're still talking</p>
-<p style="font-size:17px; color:#c9d1d9; margin:22px auto 0; max-width:640px; line-height:1.6;">A real-time voice agent that looks things up <b style="color:#79c0ff;">mid-sentence</b>. Powered by <a href="https://serpapi.com" style="color:#58a6ff;">SerpApi</a> for grounded answers, on a voice stack that hears you, waits for you, and can be interrupted.</p>
-<p style="margin:26px auto 0; max-width:700px;">
-<a href="#why" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">why</a>
-<a href="#quick-start" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">quick-start</a>
-<a href="#serpapi" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">serpapi</a>
-<a href="#prefetch" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">prefetch</a>
-<a href="#architecture" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">architecture</a>
-<a href="#benchmark" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">benchmark</a>
-<a href="#tools" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">tools</a>
-<a href="#api" style="display:inline-block; margin:4px; padding:7px 16px; border:1px solid #30363d; border-radius:999px; background:#010409; color:#79c0ff; font-size:13px; text-decoration:none; font-family:ui-monospace,SFMono-Regular,monospace;">api</a>
+<div style="width:100%; max-width:900px; margin:0 auto; border:1px solid #21262d; border-radius:14px; overflow:hidden; background:#0d1117;">
+
+<div style="height:3px; background:linear-gradient(90deg,#1f6feb 0%,#58a6ff 45%,#f0b72f 100%);"></div>
+
+<div style="padding:40px 32px 30px;">
+
+<p style="margin:0; font-family:ui-monospace,SFMono-Regular,monospace; font-size:11px; letter-spacing:1.6px; color:#8b949e;">SERPARI INDIA HACKATHON 2026 &nbsp;&middot;&nbsp; TRACK: AI AGENTS</p>
+
+<p style="font-size:52px; font-weight:700; color:#e6edf3; margin:16px 0 0; letter-spacing:-2px; line-height:1;">Bolo</p>
+
+<p style="font-size:19px; color:#79c0ff; margin:16px auto 0; max-width:660px; line-height:1.45; font-weight:500;">Grounded voice search that begins before you finish the sentence.</p>
+
+<p style="font-size:15px; color:#8b949e; margin:18px auto 0; max-width:690px; line-height:1.7;">Bolo is a real-time voice agent that looks things up <b style="color:#c9d1d9;">mid-utterance</b>. A 421M-parameter decision model reads every partial transcript, so the <a href="https://serpapi.com" style="color:#58a6ff; text-decoration:none;">SerpApi</a> request is already in flight while you are still speaking. Results are condensed to one or two speakable sentences, with every fact tied to the source it came from.</p>
+
+<p style="margin:28px auto 0; max-width:720px; font-family:ui-monospace,SFMono-Regular,monospace; font-size:11px; letter-spacing:1.1px;">
+<a href="#why" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">WHY</a>
+<a href="#quick-start" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">QUICK START</a>
+<a href="#serpapi" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #f0b72f; border-radius:6px; background:#1c1500; color:#f0b72f; text-decoration:none;">SERPAPI</a>
+<a href="#prefetch" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">PREFETCH</a>
+<a href="#architecture" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">ARCHITECTURE</a>
+<a href="#tools" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">TOOLS</a>
+<a href="#benchmark" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">BENCHMARK</a>
+<a href="#api" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">API</a>
 </p>
-<p style="margin:20px auto 0; max-width:700px; font-family:ui-monospace,SFMono-Regular,monospace; font-size:12px;">
-<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">VAD</span>
-<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">STT</span>
-<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">TURN</span>
-<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">LAYA</span>
-<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">SERPAPI</span>
-<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">LLM</span>
-<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">TTS</span>
-<span style="display:inline-block; margin:3px; padding:4px 12px; border:1px solid #1f6feb; border-radius:6px; background:#0d1b33; color:#58a6ff;">MEMORY</span>
+
+<p style="margin:24px auto 0; max-width:720px; font-family:ui-monospace,SFMono-Regular,monospace; font-size:11px; letter-spacing:0.6px; color:#6e7681;">
+<span style="display:inline-block; margin:3px; padding:5px 11px; border:1px solid #f0b72f; border-radius:5px; background:#1c1500; color:#f0b72f; font-weight:600;">SerpApi</span>
+<span style="display:inline-block; margin:3px; padding:5px 11px; border:1px solid #21262d; border-radius:5px; color:#8b949e;">Silero VAD</span>
+<span style="display:inline-block; margin:3px; padding:5px 11px; border:1px solid #21262d; border-radius:5px; color:#8b949e;">Whisper</span>
+<span style="display:inline-block; margin:3px; padding:5px 11px; border:1px solid #21262d; border-radius:5px; color:#8b949e;">Laya 421M</span>
+<span style="display:inline-block; margin:3px; padding:5px 11px; border:1px solid #21262d; border-radius:5px; color:#8b949e;">OpenAI-compatible LLM</span>
+<span style="display:inline-block; margin:3px; padding:5px 11px; border:1px solid #21262d; border-radius:5px; color:#8b949e;">Piper TTS</span>
 </p>
+
 </div>
-<div style="padding:14px 28px; background:#010409; border-top:1px solid #21262d; font-family:ui-monospace,SFMono-Regular,monospace; font-size:12px; color:#8b949e;"><span style="color:#58a6ff;">~820ms</span> speech-end to first audio &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">484</span> tests passing &nbsp;&middot;&nbsp; <span style="color:#58a6ff;">74.5</span>/100 benchmark &nbsp;&middot;&nbsp; barge-in &amp; backchannel native &nbsp;&middot;&nbsp; track: <span style="color:#58a6ff;">AI Agents</span></div>
+
+<div style="display:flex; flex-wrap:wrap; padding:14px 32px; background:#010409; border-top:1px solid #21262d; font-family:ui-monospace,SFMono-Regular,monospace; font-size:12px; color:#6e7681; text-align:left;">
+<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">~820 ms</span><br/>speech-end to first audio</div>
+<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">484</span><br/>tests passing</div>
+<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">74.5 / 100</span><br/>benchmark (pre-SerpApi TASA baseline)</div>
+<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">Entity-locked</span><br/>unverified names blocked in output</div>
+</div>
+
 </div>
 </div>
 
