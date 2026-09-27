@@ -427,12 +427,14 @@ Depth lives in the code, not in this file: the guarded dialogue FSM in
 selection in `modules/tts/prosody.py`, and the orchestration itself in
 [`core/pipeline.py`](core/pipeline.py).
 
-Two self-contained interactive diagrams — open either directly in a browser,
+Self-contained interactive diagrams — open any directly in a browser,
 no server needed:
 
 - [`arch/bolo-serpapi-architecture.html`](arch/bolo-serpapi-architecture.html)
   — **the Bolo search path**: LLM tool call → `ToolRegistry` → the three
   engines → `condense_*()` → cache and credit budget.
+- [`arch/laya-architecture.html`](arch/laya-architecture.html) — the Laya
+  System-1 decisions: turn timing, turn context, and interrupt semantics.
 - [`assets/tasa-architecture.html`](assets/tasa-architecture.html) — the full
   TASA runtime, Listen → Think → Speak.
 
@@ -575,7 +577,7 @@ faith from this file; it needs its own A/B run.
 | Suite | Tests | Covers |
 |-------|------:|--------|
 | `tests/` | 424 (32 files) | pipeline, turn-taking, prosody, memory, entity grounding, backchannel vs barge-in, Laya phases 2–5, shadow store, fine-tune, live-latency |
-| `tests/test_serpapi.py` | 44 | **the Bolo layer** — timeout, query normalisation, TTL + negative cache, LRU bound, in-flight de-dup, shielded cancellation, connection reuse, credit cap, fatal-error kill switch, fixture recording, `key=value` call parsing, and all three `condense_*` functions against replayed fixtures |
+| `tests/test_serpapi.py` | 45 | **the Bolo layer** — timeout, query normalisation, TTL + negative cache, LRU bound, in-flight de-dup, shielded cancellation, connection reuse, credit cap, fatal-error kill switch, fixture recording, `key=value` call parsing, and all three `condense_*` functions against replayed fixtures |
 | `tests/test_laya_speed.py` | 18 | **the prefetch decision** — vote-then-pause firing, the dangling-word gate driven through the real audio loop, prefix-extend vs diverged vote, one-credit-per-utterance, and the bounded wait |
 | `bench/tests/` | 60 (5 files) | harness reproducibility, scoring, latency recording |
 
@@ -617,12 +619,15 @@ bolo/
 │   ├── laya/     # Typed question schemas (turn / cadence-1 / prefetch)
 │   └── turn/ backchannel/ prosody/ emotion/ memory/ dialogue/ tts/ metrics/ vad/
 ├── bench/        # Speech-to-speech harness: scenarios, judge, endpointing, Laya eval
-├── tests/        # 424 unit tests (incl. 44 SerpApi fixture-replay tests)
-│   └── fixtures/serpapi/   # Recorded SerpApi payloads for offline replay
+├── tests/        # 424 unit tests (incl. 45 SerpApi + 18 prefetch-gate tests)
+│   └── fixtures/serpapi/   # SerpApi-shaped JSON payloads for offline replay
 ├── assets/       # cover + interactive TASA runtime diagram
-├── arch/         # bolo-serpapi-architecture.json — the search path as a diagram spec
+├── arch/         # interactive diagrams: Bolo search path + Laya System-1 (.html + .json spec)
+├── archify/      # TASA runtime diagram source (.json spec + render)
+├── utils/        # audio helpers, logger, timers, bench harness verifier
+├── streamlit_app.py   # live dashboard (topic / intent / state) on :8501
 ├── report.json   # Canonical benchmark (74.5 / 100)
-└── Dockerfile, docker-compose.demo.yml (+ .gpu.yml override), pyproject.toml
+└── Dockerfile, docker-compose.yml, docker-compose.demo.yml (+ .gpu.yml override), pyproject.toml
 ```
 
 ---
@@ -702,10 +707,12 @@ resampled to 16 kHz mono; outgoing TTS WAV is header-stripped into a `TTSTrack`.
 **Existing project — yes.** The voice engine (VAD → STT → turn detection → LLM
 → TTS, barge-in, backchannel, memory, Laya System-1) is **TASA**, built before
 this hackathon. Bolo is the SerpApi search layer added on top of it, plus the
-mid-sentence prefetch. Roughly the first two items of the plan are implemented:
-the SerpApi client, the three search tools (`search_web`, `search_places`,
-`get_news`), and `key=value` tool arguments. Flights and hotels tools are **not**
-built yet, the prefetch path has no dedicated test coverage, and there is no
+mid-sentence prefetch. Implemented so far: the SerpApi client (cache, de-dup,
+credit cap, kill switch), the three search tools (`search_web`, `search_places`,
+`get_news`) with keyless fallbacks, `key=value` tool arguments, fixture-replay
+tests, and the pause-gated SerpApi prefetch (one credit per utterance, covered by
+18 tests in `tests/test_laya_speed.py`). **Not built yet:** Flights and Hotels
+tools, the on-screen results card, a filler line while searching, and a
 SerpApi-vs-fallback A/B benchmark (see the honest gap noted above).
 
 **AI tools used.** Built with AI assistance (Claude) for code generation,
