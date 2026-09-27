@@ -367,6 +367,19 @@ multi-tier memory. Bolo adds the search layer on top.
 
 ```mermaid
 flowchart TB
+    subgraph Serp["SERPAPI — the layer that makes this a search agent"]
+        direction TB
+        CLIFF["SerpApiClient<br/>5s timeout · keep-alive conn<br/>15m TTL + 5m negative cache<br/>in-flight dedup · credit cap · kill switch"]
+        CLIFF --> G["google<br/>answer box → KG → top 2"]
+        CLIFF --> M["google_maps<br/>top 3 places · rating · hours"]
+        CLIFF --> N["google_news<br/>headline · source · date"]
+        G --> COND["condense_*()<br/>30–40 KB JSON → 1–2 speakable sentences<br/>every fact tagged with its source domain"]
+        M --> COND
+        N --> COND
+        COND --> CARD["Results card on screen<br/>title · source · link"]
+        CLIFF -.->|"no key · cap reached · fatal error"| FALL["Fallback<br/>DuckDuckGo → Wikipedia<br/>(free, so prefetch is never blocked)"]
+    end
+
     subgraph Listen["LISTEN — while you talk"]
         MIC[Microphone] --> SEG[128ms frame segmentation]
         SEG --> VAD[Silero VAD + RMS backstop]
@@ -388,15 +401,9 @@ flowchart TB
         EXT --> FIRE
     end
 
-    subgraph Search["BOLO — SerpApi layer"]
-        CLIFF["SerpApiClient<br/>5s timeout · keep-alive conn<br/>15m TTL + 5m negative cache<br/>in-flight dedup · credit cap · kill switch"]
-        COND["condense_*()<br/>answer box → KG → top 2<br/>places · headlines"]
-        FALL["Fallback<br/>DuckDuckGo → Wikipedia"]
-    end
-
     subgraph Think["THINK"]
         STT2[Final STT] --> REP[Echo / repetition filter]
-        REP --> BUILDER[Prompt builder<br/>facts + summary + retrieval<br/>+ prefetched result]
+        REP --> BUILDER[Prompt builder<br/>facts + summary + retrieval<br/>+ prefetched SerpApi result]
         BUILDER --> LLM[OpenAI-compatible<br/>streaming LLM]
     end
 
@@ -409,8 +416,6 @@ flowchart TB
     PSTT -.->|partial text| PREF
     PREF -.->|discarded if <3 words| TURN
     FIRE --> CLIFF
-    CLIFF --> COND
-    CLIFF -.->|no key / cap reached / failed| FALL
     COND --> WAIT
     WAIT -->|result or drop| BUILDER
     TURN -.-> CLS
@@ -431,12 +436,13 @@ Self-contained interactive diagrams — open any directly in a browser,
 no server needed:
 
 - [`arch/bolo-serpapi-architecture.html`](arch/bolo-serpapi-architecture.html)
-  — **the Bolo search path**: LLM tool call → `ToolRegistry` → the three
-  engines → `condense_*()` → cache and credit budget.
-- [`arch/laya-architecture.html`](arch/laya-architecture.html) — the Laya
-  System-1 decisions: turn timing, turn context, and interrupt semantics.
+  — **Bolo — the SerpApi search path**: LLM tool call → `ToolRegistry` → the
+  three engines (`google`, `google_maps`, `google_news`) → `condense_*()` →
+  cache and credit budget.
+- [`arch/laya-architecture.html`](arch/laya-architecture.html) — **Bolo — Laya
+  System-1 prefetch decisions**: turn timing, turn context, interrupt semantics.
 - [`assets/tasa-architecture.html`](assets/tasa-architecture.html) — the full
-  TASA runtime, Listen → Think → Speak.
+  real-time voice runtime, Listen → Think → Speak (TASA underneath).
 
 ### Measured latency
 
