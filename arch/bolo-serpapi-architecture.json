@@ -1,0 +1,266 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Bolo — SerpApi Search Path",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1330,
+      552
+    ]
+  },
+  "components": [
+    {
+      "id": "llm",
+      "type": "external",
+      "label": "LLM tool call",
+      "sublabel": "core/pipeline.py",
+      "pos": [
+        20,
+        222
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "prefetch",
+      "type": "backend",
+      "label": "Paid prefetch",
+      "sublabel": "_start_paid_prefetch",
+      "pos": [
+        310,
+        40
+      ],
+      "size": [
+        230,
+        56
+      ]
+    },
+    {
+      "id": "registry",
+      "type": "backend",
+      "label": "ToolRegistry",
+      "sublabel": "registry.py · key=value",
+      "pos": [
+        310,
+        222
+      ],
+      "size": [
+        230,
+        64
+      ]
+    },
+    {
+      "id": "web",
+      "type": "backend",
+      "label": "search_web",
+      "sublabel": "web_search.py",
+      "pos": [
+        660,
+        40
+      ],
+      "size": [
+        210,
+        64
+      ]
+    },
+    {
+      "id": "maps",
+      "type": "backend",
+      "label": "search_places",
+      "sublabel": "local.py",
+      "pos": [
+        660,
+        222
+      ],
+      "size": [
+        210,
+        64
+      ]
+    },
+    {
+      "id": "news",
+      "type": "backend",
+      "label": "get_news",
+      "sublabel": "news.py",
+      "pos": [
+        660,
+        372
+      ],
+      "size": [
+        210,
+        64
+      ]
+    },
+    {
+      "id": "api",
+      "type": "external",
+      "label": "serpapi.com",
+      "sublabel": "search.json · 250 / month",
+      "pos": [
+        1020,
+        40
+      ],
+      "size": [
+        250,
+        56
+      ]
+    },
+    {
+      "id": "client",
+      "type": "backend",
+      "label": "SerpApiClient",
+      "sublabel": "providers/search/serpapi.py",
+      "tag": "gl=in · hl=en",
+      "pos": [
+        1020,
+        222
+      ],
+      "size": [
+        250,
+        64
+      ]
+    },
+    {
+      "id": "cache",
+      "type": "database",
+      "label": "TTL + negative cache",
+      "sublabel": "15 m · 5 m · dedup",
+      "pos": [
+        1020,
+        372
+      ],
+      "size": [
+        250,
+        56
+      ]
+    },
+    {
+      "id": "budget",
+      "type": "security",
+      "label": "Credit cap + kill switch",
+      "sublabel": "cap 200 · fatal → off",
+      "pos": [
+        1020,
+        452
+      ],
+      "size": [
+        250,
+        56
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "llm-registry",
+      "from": "llm",
+      "to": "registry",
+      "label": "one tool call",
+      "variant": "emphasis"
+    },
+    {
+      "id": "prefetch-registry",
+      "from": "prefetch",
+      "to": "registry",
+      "label": "search_web on a 200 ms pause",
+      "variant": "emphasis",
+      "labelDy": 28
+    },
+    {
+      "id": "registry-web",
+      "from": "registry",
+      "to": "web",
+      "label": "(query)"
+    },
+    {
+      "id": "registry-maps",
+      "from": "registry",
+      "to": "maps",
+      "label": "(query, location)",
+      "labelDy": 12
+    },
+    {
+      "id": "registry-news",
+      "from": "registry",
+      "to": "news",
+      "label": "(topic)"
+    },
+    {
+      "id": "web-client",
+      "from": "web",
+      "to": "client",
+      "label": "engine=google",
+      "toSide": "top"
+    },
+    {
+      "id": "maps-client",
+      "from": "maps",
+      "to": "client",
+      "label": "engine=google_maps"
+    },
+    {
+      "id": "news-client",
+      "from": "news",
+      "to": "client",
+      "label": "engine=google_news"
+    },
+    {
+      "id": "client-api",
+      "from": "client",
+      "to": "api",
+      "label": "GET · 1 credit",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDx": 45
+    },
+    {
+      "id": "client-cache",
+      "from": "client",
+      "to": "cache",
+      "label": "key = engine + params",
+      "labelDy": 28
+    },
+    {
+      "id": "client-budget",
+      "from": "client",
+      "to": "budget",
+      "label": "credits_left",
+      "fromSide": "right",
+      "toSide": "right",
+      "labelDx": -28,
+      "labelDy": -50
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Why a client, not a call",
+      "items": [
+        "Hard 5 s timeout — a slow search can never stall a spoken turn",
+        "In-flight de-dup under asyncio.shield: a prefetch cancelled at speech-end still lands in the cache instead of wasting the credit",
+        "SERPAPI_RECORD_DIR writes every live response as a JSON fixture, so tests and benchmarks never spend a credit"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Credit budget",
+      "items": [
+        "Cap 200 by default (SERPAPI_CREDIT_CAP) against a 250 / month free tier",
+        "15 min TTL cache, 5 min negative cache, normalize_query() folds “Goa?” onto “goa”",
+        "Fatal account errors (invalid key, ran out of searches) set disabled_reason and fall through to the keyless path"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Grounding the read-out",
+      "items": [
+        "condense_google(): answer box → knowledge graph → top 2 organic, each with its source domain",
+        "condense_places(): name, rating, price, open state, address — search_places(query, location) has no keyless fallback on purpose",
+        "SerpApiError text starts “Search failed:” / “Unable”, so ToolRegistry._result_is_bad retries instead of reading it aloud"
+      ]
+    }
+  ]
+}
