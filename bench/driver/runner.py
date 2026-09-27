@@ -216,7 +216,7 @@ class ScenarioRunner:
             data = {"spoken": step.text, "pcm_bytes": len(pcm)}
         await self._push_pcm(pcm)
         # Guarantee a minimum trailing-silence window after a spoken turn. The
-        # TASA pipeline only finalizes a turn once it observes silence >= its
+        # Bolo pipeline only finalizes a turn once it observes silence >= its
         # adaptive endpoint threshold (~350-900ms nominal, but in practice up to
         # ~2.5s under real-time frame pacing). Scenario pauses of 600-900ms are
         # often too short, so the turn never commits and the subsequent
@@ -237,7 +237,7 @@ class ScenarioRunner:
         pcm = wav_to_pcm16(clip.audio, clip.sr, self.agent.sample_rate)
         await self._push_pcm(pcm)
         # Real clips often carry little/no trailing silence (the dummy
-        # LibriSpeech clip has ~46ms), but the TASA pipeline only finalizes a
+        # LibriSpeech clip has ~46ms), but the Bolo pipeline only finalizes a
         # turn once it sees silence >= endpoint (~350-900ms). Without a
         # trailing-silence window the turn never commits -> no transcript ->
         # empty hypothesis -> WER 100%. Always guarantee a silence tail so the

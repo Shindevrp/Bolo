@@ -39,7 +39,7 @@ from core.state import DialogueState
 from modules.dialogue.prompts import build_system_prompt
 from modules.metrics.latency import LatencyTracker
 from modules.metrics.logger import MetricsLogger
-from modules.tools.registry import ToolRegistry
+from modules.tools.registry import ToolMarkerFilter, ToolRegistry
 from modules.tools.builtin import get_builtin_tools
 from modules.laya.questions import (
     CADENCE1_QUESTIONS,
@@ -96,7 +96,7 @@ ECHO_OVERLAP_RATIO = 0.55  # probe-vs-spoken word overlap that means "echo"
 # large silence chunk can be misclassified as speech and swallow the turn end).
 FRAME_BYTES = 4096
 
-# Cadence-1 System-1 decision thresholds (Phase-3/4, opt-in via TASA_LAYA_PHASE3).
+# Cadence-1 System-1 decision thresholds (Phase-3/4, opt-in via BOLO_LAYA_PHASE3).
 # Mirroring the Phase-2 action bar, base checkpoints are over-confident so these
 # are deliberately strict: all three must hold before an endpoint is shortened
 # or a barge verdict is acted on, and a probe result is only "fresh" within a
@@ -1528,8 +1528,8 @@ class StreamingPipeline:
             )
 
             # Phase-2/5: turn-level System-1 pass. Rows are always shadow-logged;
-            # context overrides are applied only when TASA_LAYA_PHASE2=1 -- or
-            # when TASA_LAYA_PHASE5=1 AND the utterance is shaped like a bare
+            # context overrides are applied only when BOLO_LAYA_PHASE2=1 -- or
+            # when BOLO_LAYA_PHASE5=1 AND the utterance is shaped like a bare
             # acknowledgment (a routing decision can't wait on a background
             # verdict, so the gate's synchronous pass only ever runs for those
             # few ack-shaped turns). This runs after every legacy classifier has
@@ -1551,7 +1551,7 @@ class StreamingPipeline:
             # table yields a ready answer. A miss forces invoke_llm=True, so an
             # "LLM-skip" can never mean "no reply". The table is pure rule
             # matching with no GPU cost, so it is decoupled from the Laya
-            # phases -- if the phase flags are off but TASA_FAST_PATH is on
+            # phases -- if the phase flags are off but BOLO_FAST_PATH is on
             # (the normal deployed configuration), canned phatics and templated
             # tool replies still answer instantly.
             fast_reply: str | None = None
@@ -1727,11 +1727,18 @@ class StreamingPipeline:
 
             full = ""
 
-            # Entities the model is legitimately allowed to reference this
-            # turn: what the user said, plus anything returned by a tool.
-            supported_entities: set[str] = set(
-                EntityGate.extract_entities(transcript)
-            )
+            # Evidence the model may legitimately name things from this turn:
+            # what the user said, the recent conversation (assistant turns in
+            # memory already passed this guard), a prefetched result, and
+            # anything a tool returns below. Whole texts, not just extracted
+            # names, so "Paradise" is backed by "Paradise Biryani".
+            supported_entities: set[str] = {transcript}
+            if memory:
+                supported_entities.update(
+                    e.content for e in memory.get_history(max_turns=6)
+                )
+            if prefetch and prefetch.get("result"):
+                supported_entities.add(str(prefetch["result"]))
 
             if fast_reply is not None:
                 # Deterministic fast reply: no LLM call, straight to TTS.
@@ -1762,6 +1769,7 @@ class StreamingPipeline:
                 # Normal single-speaker streaming path
                 first_token = True
                 tool_marker_seen = False
+                marker_filter = ToolMarkerFilter()
 
                 bc_timer = None
                 if not ctx.urgent:
@@ -1782,8 +1790,9 @@ class StreamingPipeline:
                         self._log_latency("llm_first_token")
                         first_token = False
                     full += token
+                    safe = marker_filter.feed(token)
 
-                    if not tool_marker_seen and "{tool:" in full:
+                    if not tool_marker_seen and marker_filter.seen:
                         tool_marker_seen = True
                         stop_tts.set()
                         await self._drain_queue(text_queue)
@@ -1794,9 +1803,10 @@ class StreamingPipeline:
                             break
                         continue
 
-                    await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
-                    for c in chunker.feed(token):
-                        await push(1, self._tool_registry.strip_calls(c))
+                    if safe:
+                        await self._emit(PipelineEvent.LLM_TOKEN, safe, session_id)
+                        for c in chunker.feed(safe):
+                            await push(1, self._tool_registry.strip_calls(c))
 
                 if first_token and bc_timer:
                     bc_timer.cancel()
@@ -1806,6 +1816,12 @@ class StreamingPipeline:
 
                 self._latency.measure("llm_full", llm_start)
                 self._log_latency("llm_full")
+
+                held = marker_filter.flush()
+                if held:
+                    await self._emit(PipelineEvent.LLM_TOKEN, held, session_id)
+                    for c in chunker.feed(held):
+                        await push(1, self._tool_registry.strip_calls(c))
 
                 tool_calls = self._tool_registry.find_calls(full)
 
@@ -1847,15 +1863,20 @@ class StreamingPipeline:
                     )
                     self._latency.measure("tool_exec", tool_start)
                     self._log_latency("tool_exec")
+                    for c, tr in zip(tool_calls, tool_results):
+                        logger.info(
+                            f"tool session={session_id} name={c.get('name')} "
+                            f"args={c.get('args')} kwargs={c.get('kwargs', {})} "
+                            f"failed={bool(tr.get('failed'))} "
+                            f"result={str(tr.get('result', ''))[:160]!r}"
+                        )
                     for tr in tool_results:
                         followup_messages.append({
                             "role": "tool",
                             "content": f"{tr['tool']} result: {tr['result']}",
                         })
                         if not tr.get("failed"):
-                            supported_entities.update(
-                                EntityGate.extract_entities(str(tr["result"]))
-                            )
+                            supported_entities.add(str(tr["result"]))
                     if any(tr.get("failed") for tr in tool_results):
                         followup_messages.append({
                             "role": "user",
@@ -1881,6 +1902,7 @@ class StreamingPipeline:
 
                     llm_start = time.perf_counter()
                     first_token = True
+                    followup_filter = ToolMarkerFilter()
                     async for token in self._llm_for(ctx).generate_stream(
                         followup_messages
                     ):
@@ -1889,12 +1911,22 @@ class StreamingPipeline:
                         if first_token:
                             first_token = False
                         full += token
-                        await self._emit(PipelineEvent.LLM_TOKEN, token, session_id)
-                        for c in chunker.feed(token):
+                        # A follow-up that calls another tool must not show or
+                        # speak the call; the next round executes it.
+                        safe = followup_filter.feed(token)
+                        if not safe:
+                            continue
+                        await self._emit(PipelineEvent.LLM_TOKEN, safe, session_id)
+                        for c in chunker.feed(safe):
                             await push(1, self._tool_registry.strip_calls(c))
 
                     if int_ev.is_set():
                         return
+                    held = followup_filter.flush()
+                    if held:
+                        await self._emit(PipelineEvent.LLM_TOKEN, held, session_id)
+                        for c in chunker.feed(held):
+                            await push(1, self._tool_registry.strip_calls(c))
 
                     self._latency.measure("llm_full", llm_start)
                     self._log_latency("llm_full")
@@ -2233,7 +2265,7 @@ class StreamingPipeline:
         """Run the cadence-2 (turn-level) Laya pass.
 
         Always shadow-logs Laya-vs-legacy rows for telemetry/calibration. When
-        Phase-2 is enabled (``TASA_LAYA_PHASE2=1``) the confident answers also
+        Phase-2 is enabled (``BOLO_LAYA_PHASE2=1``) the confident answers also
         override legacy classifier output directly on ``ctx``. Fails open: any
         error, timeout, or low-confidence answer keeps today's behavior.
         """
@@ -2777,7 +2809,7 @@ class StreamingPipeline:
             self._s1_prefetch_inflight.pop(session_id, None)
 
     # ------------------------------------------------------------------
-    # Phase-2 deterministic routing (used only when TASA_LAYA_PHASE2=1)
+    # Phase-2 deterministic routing (used only when BOLO_LAYA_PHASE2=1)
     # ------------------------------------------------------------------
 
     _FAST_CANNED_REPLIES: ClassVar[dict[str, str]] = {

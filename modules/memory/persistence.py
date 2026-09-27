@@ -13,7 +13,7 @@ logger = get_logger("persistence")
 class SessionPersistence:
     """Save and load session state to JSON files."""
 
-    def __init__(self, storage_dir: str = "~/.tasa/sessions") -> None:
+    def __init__(self, storage_dir: str = "~/.bolo/sessions") -> None:
         self.storage_dir = Path(storage_dir).expanduser()
         self.storage_dir.mkdir(parents=True, exist_ok=True)
 

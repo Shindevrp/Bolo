@@ -360,6 +360,18 @@ class TestSearchWeb:
         assert len(out.split(" | ")) == 3
         assert "goa-tourism.com" in out
 
+    def test_ai_overview_leads_when_no_answer_box(self, serp) -> None:
+        """Recorded live response: no answer box or knowledge graph, but an
+        inlined AI overview with the direct answer."""
+        out = run(web_search.search_web("population of pune"))
+        parts = out.split(" | ")
+        assert parts[0].startswith("The estimated population of Pune city in 2026 is approximately 4.7 million")
+        assert parts[0].endswith("(census2011.co.in)")
+        assert len(parts) == 3  # overview + two organic
+
+    def test_ai_overview_page_token_only_is_skipped(self) -> None:
+        assert web_search._ai_overview({"page_token": "x"}) == ""
+
     def test_sends_india_locale(self, serp) -> None:
         run(web_search.search_web("best time to visit goa"))
         assert serp.requests[0]["gl"] == "in"

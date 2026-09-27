@@ -6,11 +6,12 @@ import time
 from urllib.request import urlopen
 
 import streamlit as st
+from core.env import env
 
-st.set_page_config(page_title="TASA", layout="wide")
+st.set_page_config(page_title="Bolo", layout="wide")
 
-BACKEND = os.getenv("TASA_BACKEND_URL", "http://localhost:8000")
-UI_URL = os.getenv("TASA_UI_URL", BACKEND)
+BACKEND = env("BACKEND_URL", "http://localhost:8000")
+UI_URL = env("UI_URL", BACKEND)
 
 
 def fetch_sessions() -> list[dict]:

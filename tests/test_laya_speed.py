@@ -6,7 +6,7 @@ Step 0.2: shadow-only turn-level (cadence-2) passes run AFTER the reply
   finishes so they never steal GPU time from the LLM streaming the answer.
 Step 0.3: prefetch schema (PREFETCH_QUESTIONS) + fp16 hook on the client.
 Step 0.4: the deterministic fast-path table is decoupled from the Laya phases
-  (``fast_path=`` / TASA_FAST_PATH).
+  (``fast_path=`` / BOLO_FAST_PATH).
 Step 0.5: ``e2e_reply`` latency = SPEECH_END -> first TTS chunk.
 Step 1: a confident live-listening tool prefetch seeds the LLM's first prompt
   so a tool round-trip is saved on a hit (and costs one lookup on a miss).

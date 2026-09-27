@@ -7,10 +7,10 @@ import sys
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="TASA real-time voice agent")
+    parser = argparse.ArgumentParser(description="Bolo — real-time voice agent")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    server = sub.add_parser("server", help="Run the TASA WebSocket server")
+    server = sub.add_parser("server", help="Run the Bolo WebSocket server")
     server.add_argument("--host", default="127.0.0.1", help="Bind address")
     server.add_argument("--port", type=int, default=8000, help="Bind port")
 
@@ -54,7 +54,7 @@ async def _run_demo(args: argparse.Namespace) -> None:
     from modules.vad.silero_vad import SileroVAD
     from utils.logger import logger
 
-    print("Initializing TASA pipeline...")
+    print("Initializing Bolo pipeline...")
     stt = FasterWhisperSTT(model_size=args.stt_model, device="cuda")
     llm = VLLMProvider(base_url=args.llm_url, model=args.llm_model)
     tts = PiperTTS(model_path=args.tts_model)
@@ -76,7 +76,7 @@ async def _run_demo(args: argparse.Namespace) -> None:
             if msg.event == PipelineEvent.FINAL_TRANSCRIPT:
                 print(f"\n[You] {msg.data}", flush=True)
             elif msg.event == PipelineEvent.LLM_DONE:
-                print(f"\n[TASA] {msg.data}", flush=True)
+                print(f"\n[Bolo] {msg.data}", flush=True)
             elif msg.event == PipelineEvent.SPEECH_START:
                 print("\n[listening...]", end="", flush=True)
             elif msg.event == PipelineEvent.LLM_TOKEN:
@@ -91,7 +91,7 @@ async def _run_demo(args: argparse.Namespace) -> None:
 
     out_task = asyncio.create_task(print_output())
 
-    print("TASA ready. Speak into your microphone. Press Ctrl+C to stop.\n")
+    print("Bolo ready. Speak into your microphone. Press Ctrl+C to stop.\n")
 
     stream = sd.InputStream(
         samplerate=SAMPLE_RATE,

@@ -1,6 +1,6 @@
 """Shared fixtures for bench tests.
 
-FakeAgent simulates a TASA-like agent: when non-silent audio arrives it emits
+FakeAgent simulates a Bolo-like agent: when non-silent audio arrives it emits
 the expected normalized event sequence (speech_start, transcript, llm_token,
 tts_chunk, tts_done), and honours explicit interrupt signals. This lets the
 runner, metrics and aggregation be tested offline and deterministically.

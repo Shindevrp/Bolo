@@ -23,6 +23,7 @@ from app.routes.sessions import router as sessions_router
 from core.pipeline import StreamingPipeline
 from core.config import CoreConfig
 from utils.logger import get_logger
+from core.env import env
 
 logger = get_logger("server")
 
@@ -31,12 +32,12 @@ pipeline: StreamingPipeline | None = None
 
 
 def _resolve_device(env_key: str) -> str:
-    """Resolve a TASA_*_DEVICE env var.
+    """Resolve a ``<PREFIX><env_key>_DEVICE`` setting, e.g. ``"STT"``.
 
     ``auto`` (the default when unset) picks cuda when available, otherwise cpu,
     so the same image runs on GPU and CPU machines without manual config.
     """
-    value = os.getenv(env_key, "").strip().lower()
+    value = env(env_key + "_DEVICE").lower()
     if value in ("", "auto"):
         try:
             import torch
@@ -61,15 +62,15 @@ def _build_providers():
     from modules.backchannel.timing import BackchannelTiming
     from modules.emotion.classifier import EmotionClassifier
     stt = FasterWhisperSTT(
-        model_size=os.getenv("TASA_STT_MODEL", "base"),
-        device=_resolve_device("TASA_STT_DEVICE"),
-        compute_type=os.getenv("TASA_STT_COMPUTE", "int8"),
+        model_size=env("STT_MODEL", "base"),
+        device=_resolve_device("STT"),
+        compute_type=env("STT_COMPUTE", "int8"),
     )
 
     llm = VLLMProvider(
-        base_url=os.getenv("TASA_LLM_URL", "http://localhost:8000/v1"),
-        api_key=os.getenv("TASA_LLM_API_KEY", "EMPTY"),
-        model=os.getenv("TASA_LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct-AWQ"),
+        base_url=env("LLM_URL", "http://localhost:8000/v1"),
+        api_key=env("LLM_API_KEY", "EMPTY"),
+        model=env("LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct-AWQ"),
     )
 
     # Optional escalation tier (Phase-2 "stronger LLM" fallback). Empty URL
@@ -80,20 +81,19 @@ def _build_providers():
             base_url=config.llm_fallback_url,
             api_key=config.llm_fallback_api_key,
             model=config.llm_fallback_model
-            or os.getenv("TASA_LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct-AWQ"),
+            or env("LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct-AWQ"),
         )
 
     # Build TTS: single voice
     tts = PiperTTS(
-        model_path=os.getenv(
-            "TASA_TTS_MODEL",
+        model_path=env("TTS_MODEL",
             str(Path(__file__).parent.parent / "models" / "en_US-lessac-medium.onnx"),
         ),
     )
 
     vad = SileroVAD(
-        threshold=float(os.getenv("TASA_VAD_THRESHOLD", "0.5")),
-        device=_resolve_device("TASA_VAD_DEVICE"),
+        threshold=float(env("VAD_THRESHOLD", "0.5")),
+        device=_resolve_device("VAD"),
     )
 
     turn_detector = TurnDetector()
@@ -108,7 +108,7 @@ def _build_providers():
     emotion = EmotionClassifier(
         enabled=config.emotion_enabled,
         model_name=config.emotion_model,
-        device=_resolve_device("TASA_EMOTION_DEVICE"),
+        device=_resolve_device("EMOTION"),
     )
 
     system1 = LayaSystem1(
@@ -144,7 +144,7 @@ async def lifespan(app: FastAPI):
             phase3=config.laya_phase3,
             phase4=config.laya_phase4,
             phase5=config.laya_phase5,
-            fast_path=config.tasa_fast_path,
+            fast_path=config.bolo_fast_path,
             tool_prefetch=config.tool_prefetch,
         )
         app.state.pipeline = pipeline
@@ -211,7 +211,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="TASA",
+    title="Bolo",
     version="0.2.0",
     lifespan=lifespan,
 )
@@ -249,7 +249,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.get("/")
 def root() -> dict[str, str]:
     return {
-        "service": "TASA",
+        "service": "Bolo",
         "version": "0.2.0",
         "status": "running" if app.state.pipeline else "degraded",
     }

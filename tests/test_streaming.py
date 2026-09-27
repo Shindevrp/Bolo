@@ -832,6 +832,46 @@ class TestToolCallStreaming:
         asyncio.run(run())
 
 
+class FragmentedToolLLM:
+    """Streams the tool marker split across tokens, like a real model, and
+    a follow-up that itself calls a tool before answering."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def generate_stream(self, messages):
+        self.calls += 1
+        if self.calls == 1:
+            tokens = ["{", "tool", ":", "calculate", "(2+2)", "}"]
+        elif self.calls == 2:
+            tokens = ["{", "tool", ":calculate(3+3)}"]
+        else:
+            tokens = ["Four, ", "and six."]
+        for token in tokens:
+            yield token
+
+
+class TestToolMarkerNeverLeaks:
+    def test_fragmented_marker_is_not_shown_or_spoken(self) -> None:
+        async def run() -> None:
+            p = _make_pipeline()
+            p.stt = FakeSTTText()
+            p.llm = FragmentedToolLLM()
+            p.tts = FakeTTSStream()
+            q = p._session_output("sess")
+            await p._process_speech_segment(b"\x00" * 1600, "sess", ConversationContext())
+            shown = ""
+            while not q.empty():
+                msg = q.get_nowait()
+                if msg.event == PipelineEvent.LLM_TOKEN:
+                    shown += msg.data
+            assert "{" not in shown and "tool" not in shown, shown
+            assert shown == "Four, and six."
+            assert not any("tool" in t for t in p.tts.synthesized)
+
+        asyncio.run(run())
+
+
 class TestBackchannelTiming:
     def test_timer_emits_backchannel_after_delay(self) -> None:
         async def run() -> None:

@@ -1,7 +1,7 @@
 """Step 3: fine-tuning scaffolding + quality gate for the Laya probe.
 
-`tasa-bench laya-finetune` takes the self-labelled shadow samples that
-`tasa-bench laya-export` (Step 2) produces and:
+`bolo-bench laya-finetune` takes the self-labelled shadow samples that
+`bolo-bench laya-export` (Step 2) produces and:
 
   1. builds a canonical train / held-out dataset (deduplicated by
      ``(question, state)``, keeping the highest-confidence label),
@@ -29,7 +29,7 @@ from pathlib import Path
 from providers.laya.store import read_shadow_log
 
 # Macro accuracy of the uncalibrated base checkpoint on the golden corpus
-# (measured via `tasa-bench laya --real`, report.laya.json). The default gate
+# (measured via `bolo-bench laya --real`, report.laya.json). The default gate
 # is "do not regress below the checkpoint this step replaces"; deployments
 # can raise it once a fine-tuned checkpoint proves out.
 DEFAULT_GATE = 0.4811
@@ -50,7 +50,7 @@ def _capability() -> tuple[callable | None, str]:
 
 
 def load_samples(path: str | Path) -> list[dict]:
-    """Read the self-labelled sample JSONL written by `tasa-bench laya-export`."""
+    """Read the self-labelled sample JSONL written by `bolo-bench laya-export`."""
     return read_shadow_log(str(path))
 
 
@@ -218,7 +218,7 @@ def run_laya_finetune(args: argparse.Namespace) -> int:
 
     samples = load_samples(args.data)
     if not samples:
-        print(f"no samples in {args.data} -- run `tasa-bench laya-export` first")
+        print(f"no samples in {args.data} -- run `bolo-bench laya-export` first")
         return 1
     ds = build_datasets(samples, heldout_frac=args.heldout)
     _write_dataset(ds, data_dir)

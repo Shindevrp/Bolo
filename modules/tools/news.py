@@ -51,7 +51,7 @@ def condense_news(data: dict[str, Any], n: int = 3) -> str:
 
 def _rss_headlines(category: str) -> str:
     feed_url = _FEEDS.get(category.lower().strip(), _FEEDS["general"])
-    req = urllib.request.Request(feed_url, headers={"User-Agent": "TASA/1.0"})
+    req = urllib.request.Request(feed_url, headers={"User-Agent": "Bolo/1.0"})
     with urllib.request.urlopen(req, timeout=10) as resp:
         xml_data = resp.read().decode()
 

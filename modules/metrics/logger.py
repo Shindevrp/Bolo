@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 
-logger = logging.getLogger("TASA.metrics")
+logger = logging.getLogger("Bolo.metrics")
 
 
 class MetricsLogger:

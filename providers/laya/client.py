@@ -7,7 +7,7 @@ so there is nothing to parse and nothing to hallucinate.
 
 Phase 1 = **shadow mode**: the pipeline runs Laya alongside the existing
 deterministic classifiers, records agreement/skew, and NEVER overrides them.
-Phase 2 = **enforcement** (opt-in, ``TASA_LAYA_PHASE2=1``): the pipeline writes
+Phase 2 = **enforcement** (opt-in, ``BOLO_LAYA_PHASE2=1``): the pipeline writes
 confident answers onto the conversation context; this client stays policy-free
 -- it only extracts typed answers and applies confidence thresholds
 (``choice`` for classification, ``action_noul``'s stricter 0.9 for routing
@@ -45,7 +45,7 @@ _ACT_PROB_REQ = 0.9
 
 
 def _resolve_device(device: str | None) -> str:
-    """Map a TASA_LAYA_DEVICE value ('', 'auto') to a concrete device."""
+    """Map a BOLO_LAYA_DEVICE value ('', 'auto') to a concrete device."""
     value = (device or "").strip().lower()
     if value in ("", "auto"):
         try:
@@ -96,7 +96,7 @@ class LayaSystem1:
             and not (explicit or allow_cpu)
         ):
             logger.warning(
-                "laya disabled: no GPU found (set TASA_LAYA_DEVICE=cpu to force)"
+                "laya disabled: no GPU found (set BOLO_LAYA_DEVICE=cpu to force)"
             )
             self._enabled = False
         self._conf_threshold = conf_threshold

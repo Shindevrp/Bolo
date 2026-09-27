@@ -18,7 +18,7 @@ services:
     environment:
       OLLAMA_GPU_LAYERS: "100"
 
-  tasa:
+  bolo:
     environment:
-      TASA_STT_MODEL: base
-      TASA_STT_COMPUTE: int8
+      BOLO_STT_MODEL: base
+      BOLO_STT_COMPUTE: int8

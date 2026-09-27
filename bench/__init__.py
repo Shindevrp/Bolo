@@ -1,7 +1,7 @@
-"""TASA Speech-to-Speech Benchmark Framework.
+"""Bolo Speech-to-Speech Benchmark Framework.
 
 A reusable, agent-agnostic benchmark harness that scores any speech-to-speech
-conversational agent (TASA first, then other agents) on the evaluator's
+conversational agent (Bolo first, then other agents) on the evaluator's
 categories, driven by scripted scenarios over real open-source audio corpora.
 
 Design goals:

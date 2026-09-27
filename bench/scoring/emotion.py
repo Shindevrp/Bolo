@@ -1,6 +1,6 @@
 """Offline emotion classification evaluation.
 
-TASA's `EmotionClassifier` maps user transcripts to a sentiment bucket
+Bolo's `EmotionClassifier` maps user transcripts to a sentiment bucket
 (`positive` | `negative` | `neutral`) using a transformer model with a
 deterministic lexicon fallback (`modules.tts.prosody.classify_sentiment`). This
 module scores that decision contract offline:

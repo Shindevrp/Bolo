@@ -38,7 +38,7 @@
 <div style="display:flex; flex-wrap:wrap; padding:14px 32px; background:#010409; border-top:1px solid #21262d; font-family:ui-monospace,SFMono-Regular,monospace; font-size:12px; color:#6e7681; text-align:left;">
 <div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">~820 ms</span><br/>speech-end to first audio</div>
 <div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">484</span><br/>tests passing</div>
-<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">74.5 / 100</span><br/>benchmark (pre-SerpApi TASA baseline)</div>
+<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">74.5 / 100</span><br/>benchmark (pre-SerpApi voice-engine baseline)</div>
 <div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">Entity-locked</span><br/>unverified names blocked in output</div>
 </div>
 
@@ -127,8 +127,8 @@ and dashboard. Open:
 docker compose -f docker-compose.demo.yml -f docker-compose.demo.gpu.yml up
 ```
 
-Customize with `TASA_DEMO_LLM_MODEL` (default `qwen2.5:3b`; use `qwen2.5:1.5b`
-on a weak machine) and `TASA_DEMO_STT_MODEL` (default `tiny`).
+Customize with `BOLO_DEMO_LLM_MODEL` (default `qwen2.5:3b`; use `qwen2.5:1.5b`
+on a weak machine) and `BOLO_DEMO_STT_MODEL` (default `tiny`).
 
 ### Local, with your own LLM
 
@@ -140,8 +140,8 @@ pip install --editable ".[all]"
 
 ollama pull qwen3:8b && ollama serve &
 
-export TASA_LLM_URL=http://localhost:11434/v1
-export TASA_LLM_MODEL=qwen3:8b
+export BOLO_LLM_URL=http://localhost:11434/v1
+export BOLO_LLM_MODEL=qwen3:8b
 export SERPAPI_API_KEY=<your key>        # optional; falls back to DDG/Wikipedia
 
 python -m app.cli server --host 127.0.0.1 --port 8000
@@ -347,12 +347,12 @@ to use.
 **Requires a GPU.** Laya is a 421M non-autoregressive model that runs a single
 forward pass per probe. On CPU a turn-level pass takes seconds, which is past
 the 2 s shadow timeout, so `providers/laya/client.py` disables itself and logs
-`laya disabled: no GPU found (set TASA_LAYA_DEVICE=cpu to force)`. **In the
+`laya disabled: no GPU found (set BOLO_LAYA_DEVICE=cpu to force)`. **In the
 CPU-only Docker demo the prefetch is therefore inactive** — Bolo still searches,
 it just waits for your final transcript and pays full latency. Run the GPU
 override to see the pause-triggered search.
 
-Turn it off with `TASA_TOOL_PREFETCH=0`. Two honest caveats: a prefetch that
+Turn it off with `BOLO_TOOL_PREFETCH=0`. Two honest caveats: a prefetch that
 falls back to DuckDuckGo still makes a live keyless HTTP request (the credit cap
 governs SerpApi, not the fallbacks), and a prefetch that fires on a pause you
 then break costs a credit without being used.
@@ -362,10 +362,10 @@ then break costs a credit without being used.
 <a name="architecture"></a>
 ## The voice engine
 
-Bolo runs on **TASA**, a real-time speech-to-speech engine that already existed
-before this project. TASA is not command-response: it streams audio, holds a
-guarded dialogue state machine, backchannels, handles barge-in, and keeps
-multi-tier memory. Bolo adds the search layer on top.
+The engine is not command-response: it streams audio, holds a guarded dialogue
+state machine, backchannels, handles barge-in, and keeps multi-tier memory.
+Bolo adds the search layer on top — see [Disclosure](#disclosure) for the
+pre-existing-project note.
 
 | Stage | Mechanism |
 |-------|-----------|
@@ -456,8 +456,8 @@ no server needed:
   cache and credit budget.
 - [`arch/laya-architecture.html`](arch/laya-architecture.html) — **Bolo — Laya
   System-1 prefetch decisions**: turn timing, turn context, interrupt semantics.
-- [`assets/tasa-architecture.html`](assets/tasa-architecture.html) — the full
-  real-time voice runtime, Listen → Think → Speak (TASA underneath).
+- [`assets/bolo-runtime-architecture.html`](assets/bolo-runtime-architecture.html) — the full
+  real-time voice runtime, Listen → Think → Speak.
 
 ### Measured latency
 
@@ -525,7 +525,7 @@ weighted categories with an external judge. The canonical result is committed
 as [`report.json`](report.json) (`label: full-fix-v2`).
 
 ```bash
-python -m bench.cli run --agent tasa-ws --limit 3 \
+python -m bench.cli run --agent bolo-ws --limit 3 \
   --judge-llm-url http://localhost:11434/v1 --judge-model qwen2.5:3b \
   --out report.json --label <name>
 ```
@@ -582,7 +582,7 @@ timeline from the event transcript — hard numbers, no judge involved:
 
 Honest gap: there is **no SerpApi-vs-DuckDuckGo before/after benchmark in this
 repo** — no fabricated-place rate delta, no prefetch hit rate, no
-time-to-first-audio comparison. The Grounding score above is a TASA baseline
+time-to-first-audio comparison. The Grounding score above is a pre-search baseline
 from before the SerpApi work landed. Don't take the search layer's benefit on
 faith from this file; it needs its own A/B run.
 
@@ -642,9 +642,9 @@ bolo/
 ├── bench/        # Speech-to-speech harness: scenarios, judge, endpointing, Laya eval
 ├── tests/        # 424 unit tests (incl. 45 SerpApi + 18 prefetch-gate tests)
 │   └── fixtures/serpapi/   # SerpApi-shaped JSON payloads for offline replay
-├── assets/       # cover + interactive TASA runtime diagram
+├── assets/       # cover + interactive Bolo runtime diagram
 ├── arch/         # interactive diagrams: Bolo search path + Laya System-1 (.html + .json spec)
-├── archify/      # TASA runtime diagram source (.json spec + render)
+├── archify/      # Bolo runtime diagram source (.json spec + render)
 ├── utils/        # audio helpers, logger, timers, bench harness verifier
 ├── streamlit_app.py   # live dashboard (topic / intent / state) on :8501
 ├── report.json   # Canonical benchmark (74.5 / 100)
@@ -656,6 +656,12 @@ bolo/
 ## Configuration
 
 `.env` is gitignored; see [`.env.example`](.env.example) for the annotated list.
+
+> **Config prefix.** Settings are read as `BOLO_*`. The engine this project grew
+> out of used a `TASA_*` prefix, and that name is still accepted as a fallback,
+> so an older `.env` or container config keeps working — see
+> [`core/env.py`](core/env.py). `BOLO_*` always wins when both are set. SerpApi
+> settings were never renamed; they are unprefixed.
 
 ### SerpApi
 
@@ -671,26 +677,26 @@ bolo/
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TASA_LAYA_ENABLED` | `1` | Master switch for the System-1 layer |
-| `TASA_LAYA_DEVICE` | *(auto)* | Empty/auto ⇒ CUDA if present, else CPU. **On CPU the client disables itself** — a turn-level pass exceeds the 2 s shadow timeout. |
-| `TASA_LAYA_CONF_THRESHOLD` | `0.5` | Confidence bar for `choice` answers (the prefetch gate) |
-| `TASA_TOOL_PREFETCH` | `1` | Mid-sentence search. `0` disables only the prefetch probe. |
-| `TASA_LAYA_PHASE2`…`PHASE5` | `0` | Enforcement tiers — fail-closed, off by default, telemetry always records |
-| `TASA_LAYA_SHADOW_LOG` | `~/.tasa/shadow/rows.jsonl` | Laya-vs-legacy rows for fine-tuning export |
+| `BOLO_LAYA_ENABLED` | `1` | Master switch for the System-1 layer |
+| `BOLO_LAYA_DEVICE` | *(auto)* | Empty/auto ⇒ CUDA if present, else CPU. **On CPU the client disables itself** — a turn-level pass exceeds the 2 s shadow timeout. |
+| `BOLO_LAYA_CONF_THRESHOLD` | `0.5` | Confidence bar for `choice` answers (the prefetch gate) |
+| `BOLO_TOOL_PREFETCH` | `1` | Mid-sentence search. `0` disables only the prefetch probe. |
+| `BOLO_LAYA_PHASE2`…`PHASE5` | `0` | Enforcement tiers — fail-closed, off by default, telemetry always records |
+| `BOLO_LAYA_SHADOW_LOG` | `~/.bolo/shadow/rows.jsonl` | Laya-vs-legacy rows for fine-tuning export |
 
 ### Models
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TASA_LLM_URL` | `http://localhost:8000/v1` | OpenAI-compatible base URL (vLLM / Ollama / hosted) |
-| `TASA_LLM_MODEL` | `Qwen/Qwen2.5-7B-Instruct-AWQ` | Model name |
-| `TASA_LLM_API_KEY` | `EMPTY` | LLM API key |
-| `TASA_LLM_FALLBACK_URL` | *(empty)* | Escalation tier; empty disables it |
-| `TASA_STT_MODEL` / `_DEVICE` / `_COMPUTE` | `base` / `cpu` / `int8` | faster-whisper size and CTranslate2 device/type |
-| `TASA_TTS_MODEL` | `/usr/share/piper/voices/en_US-lessac-medium.onnx` | Piper voice path |
-| `TASA_VAD_THRESHOLD` / `_DEVICE` | `0.5` / `auto` | Silero speech threshold and device |
-| `TASA_EMOTION_ENABLED` / `_MODEL` | `1` / `emotion-english-distilroberta-base` | Emotion classifier |
-| `TASA_LOG_LEVEL` | `INFO` | `DEBUG` enables pipeline traces |
+| `BOLO_LLM_URL` | `http://localhost:8000/v1` | OpenAI-compatible base URL (vLLM / Ollama / hosted) |
+| `BOLO_LLM_MODEL` | `Qwen/Qwen2.5-7B-Instruct-AWQ` | Model name |
+| `BOLO_LLM_API_KEY` | `EMPTY` | LLM API key |
+| `BOLO_LLM_FALLBACK_URL` | *(empty)* | Escalation tier; empty disables it |
+| `BOLO_STT_MODEL` / `_DEVICE` / `_COMPUTE` | `base` / `cpu` / `int8` | faster-whisper size and CTranslate2 device/type |
+| `BOLO_TTS_MODEL` | `/usr/share/piper/voices/en_US-lessac-medium.onnx` | Piper voice path |
+| `BOLO_VAD_THRESHOLD` / `_DEVICE` | `0.5` / `auto` | Silero speech threshold and device |
+| `BOLO_EMOTION_ENABLED` / `_MODEL` | `1` / `emotion-english-distilroberta-base` | Emotion classifier |
+| `BOLO_LOG_LEVEL` | `INFO` | `DEBUG` enables pipeline traces |
 
 ---
 
@@ -723,6 +729,7 @@ resampled to 16 kHz mono; outgoing TTS WAV is header-stripped into a `TTSTrack`.
 
 ---
 
+<a name="disclosure"></a>
 ## Disclosure
 
 **Existing project — yes.** The voice engine (VAD → STT → turn detection → LLM

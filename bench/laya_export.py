@@ -1,7 +1,7 @@
 """Export the disk-backed shadow log into Laya fine-tuning samples.
 
-The Step 2 -> Step 3 bridge: `tasa-bench laya-export` reads the JSONL shadow
-log written by the server (TASA_LAYA_SHADOW_LOG), keeps the self-labelled
+The Step 2 -> Step 3 bridge: `bolo-bench laya-export` reads the JSONL shadow
+log written by the server (BOLO_LAYA_SHADOW_LOG), keeps the self-labelled
 rows -- where Laya agreed with the legacy classifier at sufficient
 confidence -- and writes them as question/answer pairs ready for Step-3
 retraining. The raw log is never modified or truncated.

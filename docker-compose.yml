@@ -2,7 +2,7 @@ services:
 
   vllm:
     image: vllm/vllm-openai:latest
-    container_name: tasa-vllm
+    container_name: bolo-vllm
     runtime: nvidia
     deploy:
       resources:
@@ -13,21 +13,21 @@ services:
               capabilities: [gpu]
     environment:
       - CUDA_VISIBLE_DEVICES=0
-      - MODEL=${TASA_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
-      - MAX_MODEL_LEN=${TASA_VLLM_MAX_LEN:-4096}
-      - GPU_MEMORY_UTILIZATION=${TASA_VLLM_GPU_UTIL:-0.90}
-      - DTYPE=${TASA_VLLM_DTYPE:-float16}
+      - MODEL=${BOLO_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
+      - MAX_MODEL_LEN=${BOLO_VLLM_MAX_LEN:-4096}
+      - GPU_MEMORY_UTILIZATION=${BOLO_VLLM_GPU_UTIL:-0.90}
+      - DTYPE=${BOLO_VLLM_DTYPE:-float16}
       - QUANTIZATION=awq
-      - API_KEY=${TASA_VLLM_API_KEY:-EMPTY}
+      - API_KEY=${BOLO_VLLM_API_KEY:-EMPTY}
     command:
       - "--model"
-      - "${TASA_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}"
+      - "${BOLO_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}"
       - "--max-model-len"
-      - "${TASA_VLLM_MAX_LEN:-4096}"
+      - "${BOLO_VLLM_MAX_LEN:-4096}"
       - "--gpu-memory-utilization"
-      - "${TASA_VLLM_GPU_UTIL:-0.90}"
+      - "${BOLO_VLLM_GPU_UTIL:-0.90}"
       - "--dtype"
-      - "${TASA_VLLM_DTYPE:-float16}"
+      - "${BOLO_VLLM_DTYPE:-float16}"
       - "--quantization"
       - "awq"
       - "--port"
@@ -46,22 +46,22 @@ services:
       start_period: 120s
     restart: unless-stopped
     networks:
-      - tasa-net
+      - bolo-net
 
-  tasa:
+  bolo:
     build: .
-    container_name: tasa-app
+    container_name: bolo-app
     depends_on:
       vllm:
         condition: service_healthy
     environment:
-      - TASA_LLM_URL=http://vllm:8000/v1
-      - TASA_LLM_MODEL=${TASA_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
-      - TASA_STT_MODEL=${TASA_STT_MODEL:-base}
-      - TASA_STT_DEVICE=${TASA_STT_DEVICE:-cpu}
-      - TASA_STT_COMPUTE=int8
-      - TASA_TTS_MODEL=/app/models/piper/en_US-lessac-medium.onnx
-      - TASA_VAD_THRESHOLD=0.5
+      - BOLO_LLM_URL=http://vllm:8000/v1
+      - BOLO_LLM_MODEL=${BOLO_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
+      - BOLO_STT_MODEL=${BOLO_STT_MODEL:-base}
+      - BOLO_STT_DEVICE=${BOLO_STT_DEVICE:-cpu}
+      - BOLO_STT_COMPUTE=int8
+      - BOLO_TTS_MODEL=/app/models/piper/en_US-lessac-medium.onnx
+      - BOLO_VAD_THRESHOLD=0.5
     ports:
       - "8000:8000"
     volumes:
@@ -74,12 +74,12 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks:
-      - tasa-net
+      - bolo-net
 
 volumes:
   vllm_cache:
   stt_cache:
 
 networks:
-  tasa-net:
+  bolo-net:
     driver: bridge

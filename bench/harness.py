@@ -23,13 +23,13 @@ from bench.scoring.wer import cer_stats, wer_stats
 
 
 def _agent_factory(kind: str, base_url: str) -> SpeechAgent:
-    if kind == "tasa-ws":
-        from bench.agent.tasa_ws import TasaWSAdapter
-        return TasaWSAdapter(url=base_url)
+    if kind == "bolo-ws":
+        from bench.agent.bolo_ws import BoloWSAdapter
+        return BoloWSAdapter(url=base_url)
     if kind in ("mock", "fake"):
         from bench.agent.mock import MockAgent
         return MockAgent()
-    raise ValueError(f"unknown agent kind: {kind} (expected 'tasa-ws' or 'mock')")
+    raise ValueError(f"unknown agent kind: {kind} (expected 'bolo-ws' or 'mock')")
 
 
 def _synthetic_clips(sc_map: dict, limits: dict[str, int]) -> dict[str, list]:
@@ -142,7 +142,7 @@ async def _run_all(agent: SpeechAgent, corpus: dict[str, list], scenarios: dict,
 
 def run_benchmark(
     *,
-    agent_kind: str = "tasa-ws",
+    agent_kind: str = "bolo-ws",
     base_url: str = "ws://localhost:8000/ws/audio",
     scenarios: str | None = None,
     corpus_limits: dict[str, int] | None = None,
@@ -152,7 +152,7 @@ def run_benchmark(
     timeout: float = 120.0,
     out_path: str | None = None,
     events_out: str | None = None,
-    label: str = "TASA",
+    label: str = "Bolo",
 ) -> Report:
     """High-level entry: connect, run, score, report."""
     return asyncio.run(

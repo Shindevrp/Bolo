@@ -2,7 +2,7 @@
 
 Cadence-1 probes run in the background at the partial-transcript cadence
 (~1s). Shadow rows are always recorded; enforcement is opt-in via
-``phase3=True`` on the pipeline (or TASA_LAYA_PHASE3=1) and is always clipped
+``phase3=True`` on the pipeline (or BOLO_LAYA_PHASE3=1) and is always clipped
 by the deterministic safety floor. Phase 4 made Laya the endpoint/barge
 authority once a fresh, confident verdict exists -- the legacy
 ``is_incomplete`` / ``BackchannelInterrupt`` signals are demoted to the

@@ -190,7 +190,7 @@ def get_builtin_tools() -> ToolRegistry:
             },
         },
         handler=get_weather,
-        proactive_hint="the user asks about weather, temperature, rain, sun, or how hot/cold it is somewhere — ALWAYS use get_weather, never search_web for weather.",
+        proactive_hint="the user asks about the weather RIGHT NOW or today somewhere (temperature, rain, how hot/cold it is). NOT for climate, seasons or the best time to visit a place — use search_web for those.",
     ))
 
     registry.register(ToolSpec(
@@ -202,7 +202,7 @@ def get_builtin_tools() -> ToolRegistry:
             },
         },
         handler=search_web,
-        proactive_hint="the user asks for a fact, a general question you're unsure about, or specific information like a person, event, or topic — use for general web search.",
+        proactive_hint="the user asks for a fact, a number (population, height, price), a person, an event, or travel advice like the best time to visit a place — use for general web search.",
     ))
 
     registry.register(ToolSpec(
@@ -214,7 +214,7 @@ def get_builtin_tools() -> ToolRegistry:
             },
         },
         handler=get_news,
-        proactive_hint="the user asks about news, headlines, or what's happening in the world or somewhere — use this instead of search_web.",
+        proactive_hint="the user asks for news or headlines, about the world or a topic/place — NEVER for restaurants, hotels or places to go.",
     ))
 
     registry.register(ToolSpec(
@@ -227,7 +227,7 @@ def get_builtin_tools() -> ToolRegistry:
             },
         },
         handler=search_places,
-        proactive_hint="the user asks for a place to eat, stay, shop or visit, or what's nearby — ALWAYS use search_places before naming any place.",
+        proactive_hint="the user asks for a restaurant, food (e.g. biryani), cafe, hotel, shop or sight, a named landmark, or what's nearby — ALWAYS use search_places before naming any place.",
     ))
 
     registry.register(ToolSpec(

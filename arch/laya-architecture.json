@@ -2,7 +2,7 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "TASA Voice Assistant — Laya System-1 Decisions",
+    "title": "Bolo — Laya System-1 Prefetch Decisions",
     "quality_profile": "showcase",
     "viewBox": [1180, 456],
     "views": [
@@ -41,7 +41,7 @@
   ],
   "boundaries": [
     { "kind": "region", "label": "System-1 Decision Layer", "wraps": ["backchannel", "laya", "endpoint", "barge"] },
-    { "kind": "region", "label": "TASA Backend", "wraps": ["ws", "pipeline", "vad", "stt", "llm", "tts", "laya", "endpoint", "barge", "backchannel"] }
+    { "kind": "region", "label": "Bolo Runtime", "wraps": ["ws", "pipeline", "vad", "stt", "llm", "tts", "laya", "endpoint", "barge", "backchannel"] }
   ],
   "connections": [
     { "id": "client-feed", "from": "client", "to": "ws", "label": "PCM 16 kHz", "variant": "emphasis", "fromSide": "right", "toSide": "left" },

@@ -1,19 +1,19 @@
-name: tasa-demo
+name: bolo-demo
 
 # One-command CPU-first demo. Runs anywhere Docker does (no GPU required).
 # On a machine with a GPU + nvidia-container-toolkit, add the GPU override:
 #   docker compose -f docker-compose.demo.yml -f docker-compose.demo.gpu.yml up
 #
-# Customize with TASA_DEMO_* env vars (not TASA_*: those are for the TASA app
+# Customize with BOLO_DEMO_* env vars (not BOLO_*: those are for the Bolo app itself
 # itself and this stack pins them so a machine-local .env can't break the demo):
-#   TASA_DEMO_LLM_MODEL  Ollama model tag to pull+use          (default qwen2.5:3b)
-#   TASA_DEMO_STT_MODEL  faster-whisper model size             (default tiny)
+#   BOLO_DEMO_LLM_MODEL  Ollama model tag to pull+use          (default qwen2.5:3b)
+#   BOLO_DEMO_STT_MODEL  faster-whisper model size             (default tiny)
 
 services:
 
   ollama:
     image: ollama/ollama:latest
-    container_name: tasa-demo-ollama
+    container_name: bolo-demo-ollama
     ports:
       - "11435:11434"
     volumes:
@@ -28,39 +28,39 @@ services:
 
   ollama-pull:
     image: ollama/ollama:latest
-    container_name: tasa-demo-ollama-pull
+    container_name: bolo-demo-ollama-pull
     depends_on:
       ollama:
         condition: service_healthy
     environment:
       OLLAMA_HOST: http://ollama:11434
-    command: ["pull", "${TASA_DEMO_LLM_MODEL:-qwen2.5:3b}"]
+    command: ["pull", "${BOLO_DEMO_LLM_MODEL:-qwen2.5:3b}"]
     restart: "no"
 
-  tasa:
+  bolo:
     build: .
-    image: tasa-demo:local
-    container_name: tasa-demo-app
+    image: bolo-demo:local
+    container_name: bolo-demo-app
     depends_on:
       ollama-pull:
         condition: service_completed_successfully
     environment:
-      TASA_LLM_URL: http://ollama:11434/v1
-      TASA_LLM_MODEL: ${TASA_DEMO_LLM_MODEL:-qwen2.5:3b}
-      TASA_STT_MODEL: ${TASA_DEMO_STT_MODEL:-tiny}
-      TASA_STT_DEVICE: auto
-      TASA_STT_COMPUTE: int8
-      TASA_VAD_DEVICE: auto
-      TASA_VAD_THRESHOLD: "0.5"
-      TASA_EMOTION_ENABLED: "0"
-      TASA_TTS_MODEL: /app/models/piper/en_US-lessac-medium.onnx
+      BOLO_LLM_URL: http://ollama:11434/v1
+      BOLO_LLM_MODEL: ${BOLO_DEMO_LLM_MODEL:-qwen2.5:3b}
+      BOLO_STT_MODEL: ${BOLO_DEMO_STT_MODEL:-tiny}
+      BOLO_STT_DEVICE: auto
+      BOLO_STT_COMPUTE: int8
+      BOLO_VAD_DEVICE: auto
+      BOLO_VAD_THRESHOLD: "0.5"
+      BOLO_EMOTION_ENABLED: "0"
+      BOLO_TTS_MODEL: /app/models/piper/en_US-lessac-medium.onnx
       # SerpApi drives search_web. Empty = keyless, and search_web falls back
       # to DuckDuckGo Instant Answers then Wikipedia. Free tier: 250/mo.
       SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
       SERPAPI_CREDIT_CAP: ${SERPAPI_CREDIT_CAP:-200}
       SERPAPI_GL: ${SERPAPI_GL:-in}
     ports:
-      - "${TASA_DEMO_APP_PORT:-8000}:8000"
+      - "${BOLO_DEMO_APP_PORT:-8000}:8000"
     volumes:
       - model_cache:/root/.cache
     healthcheck:
@@ -73,14 +73,14 @@ services:
 
   dashboard:
     build: .
-    image: tasa-demo:local
-    container_name: tasa-demo-dashboard
+    image: bolo-demo:local
+    container_name: bolo-demo-dashboard
     depends_on:
-      tasa:
+      bolo:
         condition: service_healthy
     environment:
-      TASA_BACKEND_URL: http://tasa:8000
-      TASA_UI_URL: http://localhost:8000
+      BOLO_BACKEND_URL: http://bolo:8000
+      BOLO_UI_URL: http://localhost:8000
     command:
       - "streamlit"
       - "run"
@@ -92,31 +92,31 @@ services:
       - "--server.headless"
       - "true"
     ports:
-      - "${TASA_DEMO_DASHBOARD_PORT:-8501}:8501"
+      - "${BOLO_DEMO_DASHBOARD_PORT:-8501}:8501"
     restart: unless-stopped
 
   bench:
-    image: tasa-demo:local
-    container_name: tasa-demo-bench
+    image: bolo-demo:local
+    container_name: bolo-demo-bench
     depends_on:
-      tasa:
+      bolo:
         condition: service_healthy
     environment:
-      TASA_JUDGE_URL: http://ollama:11434/v1
-      TASA_JUDGE_MODEL: ${TASA_DEMO_LLM_MODEL:-qwen2.5:3b}
+      BOLO_JUDGE_URL: http://ollama:11434/v1
+      BOLO_JUDGE_MODEL: ${BOLO_DEMO_LLM_MODEL:-qwen2.5:3b}
     command:
       - "python"
       - "-m"
       - "bench.cli"
       - "run"
       - "--agent"
-      - "tasa-ws"
+      - "bolo-ws"
       - "--base-url"
-      - "ws://tasa:8000/ws/audio"
+      - "ws://bolo:8000/ws/audio"
       - "--judge-llm-url"
       - "http://ollama:11434/v1"
       - "--judge-model"
-      - "${TASA_DEMO_LLM_MODEL:-qwen2.5:3b}"
+      - "${BOLO_DEMO_LLM_MODEL:-qwen2.5:3b}"
       - "--limit"
       - "6"
       - "--out"

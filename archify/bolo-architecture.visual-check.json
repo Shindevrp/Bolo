@@ -6,7 +6,7 @@
   "status": "pass",
   "visualReview": "pending",
   "artifact": {
-    "path": "/home/shinde/Desktop/TASA/assets/tasa-architecture.html",
+    "path": "/home/shinde/Desktop/Bolo/archify/bolo-architecture.html",
     "sha256": "dcb67d5b504a870f671a841a731c65b5e58f54c34d21eedd16e5f50eaf821bb8",
     "bytes": 715171
   },
@@ -440,7 +440,7 @@
         "viewerChromeActive": true,
         "viewerChromeOk": true,
         "resolvedTheme": "light",
-        "file": "tasa-architecture.visual-check.1440x900.light.png"
+        "file": "bolo-architecture.visual-check.1440x900.light.png"
       },
       {
         "width": 1440,
@@ -472,7 +472,7 @@
         "viewerChromeActive": true,
         "viewerChromeOk": true,
         "resolvedTheme": "dark",
-        "file": "tasa-architecture.visual-check.1440x900.dark.png"
+        "file": "bolo-architecture.visual-check.1440x900.dark.png"
       },
       {
         "width": 2048,
@@ -504,7 +504,7 @@
         "viewerChromeActive": true,
         "viewerChromeOk": true,
         "resolvedTheme": "light",
-        "file": "tasa-architecture.visual-check.2048x1320.light.png"
+        "file": "bolo-architecture.visual-check.2048x1320.light.png"
       },
       {
         "width": 2048,
@@ -536,13 +536,13 @@
         "viewerChromeActive": true,
         "viewerChromeOk": true,
         "resolvedTheme": "dark",
-        "file": "tasa-architecture.visual-check.2048x1320.dark.png"
+        "file": "bolo-architecture.visual-check.2048x1320.dark.png"
       }
     ],
-    "contactSheet": "tasa-architecture.visual-check.html"
+    "contactSheet": "bolo-architecture.visual-check.html"
   },
   "sidecars": {
-    "receipt": "tasa-architecture.visual-check.json",
-    "contactSheet": "tasa-architecture.visual-check.html"
+    "receipt": "bolo-architecture.visual-check.json",
+    "contactSheet": "bolo-architecture.visual-check.html"
   }
 }

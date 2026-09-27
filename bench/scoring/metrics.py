@@ -99,7 +99,7 @@ def turn_end_metrics(tl: Timeline) -> dict:
     finished, or split a turn. Derived purely from event ordering + a
     'pre-empt' signal (a response event occurring before an expected end)."""
     # Heuristic: if LLM_TOKEN/TTS starts before the user's speech_end, the
-    # agent responded mid-utterance (early). TASA only emits speech_end then
+    # agent responded mid-utterance (early). Bolo only emits speech_end then
     # processes; so normally LLM follows speech_end. We surface the ordering.
     spe = tl.first(EventType.SPEECH_END)
     first_llm = tl.first(EventType.LLM_TOKEN)
@@ -173,7 +173,7 @@ def context_facts(tl: Timeline) -> dict:
 def grounding_metrics(tl: Timeline) -> dict:
     """Detect fabricated capitalized proper nouns and uncertainty expression.
 
-    Mirrors TASA's EntityGate heuristic: extract capitalized runs, and flag
+    Mirrors Bolo's EntityGate heuristic: extract capitalized runs, and flag
     entities not present in the user's own input. This is a deterministic
     proxy (never a ground truth about existence), which is the honest limit
     for a black-box harness.

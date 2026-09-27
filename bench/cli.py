@@ -2,9 +2,9 @@
 
 Usage:
   python -m bench.cli list
-  python -m bench.cli run --agent tasa-ws --base-url ws://localhost:8000/ws/audio \
+  python -m bench.cli run --agent bolo-ws --base-url ws://localhost:8000/ws/audio \
       --scenarios all --out report.json --judge-llm-url http://localhost:11434/v1
-  python -m bench.cli compare --a gpt_report.json --b tasa_report.json
+  python -m bench.cli compare --a gpt_report.json --b bolo_report.json
 """
 from __future__ import annotations
 
@@ -267,13 +267,13 @@ def cmd_compare(args) -> int:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog="tasa-bench", description="Speech-to-speech benchmark harness")
+    parser = argparse.ArgumentParser(prog="bolo-bench", description="Speech-to-speech benchmark harness")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_list = sub.add_parser("list", help="List available scenarios")
 
     p_run = sub.add_parser("run", help="Run the benchmark")
-    p_run.add_argument("--agent", default="tasa-ws", help="agent adapter kind: tasa-ws (live) or mock (offline smoke)")
+    p_run.add_argument("--agent", default="bolo-ws", help="agent adapter kind: bolo-ws (live) or mock (offline smoke)")
     p_run.add_argument("--base-url", default="ws://localhost:8000/ws/audio")
     p_run.add_argument("--scenarios", default="all", help="comma list or 'all'")
     p_run.add_argument("--repeats", type=int, default=1, help="repeat content scenarios")
@@ -282,10 +282,10 @@ def main(argv=None) -> int:
     p_run.add_argument("--judge-model", default="qwen2.5:3b")
     p_run.add_argument("--timeout", type=float, default=120.0)
     p_run.add_argument("--out", default=None, help="write report JSON+markdown")
-    p_run.add_argument("--label", default="TASA")
+    p_run.add_argument("--label", default="Bolo")
 
     p_end = sub.add_parser("endpoint", help="Run benchmark and report endpointing/barge-in diagnostics")
-    p_end.add_argument("--agent", default="tasa-ws")
+    p_end.add_argument("--agent", default="bolo-ws")
     p_end.add_argument("--base-url", default="ws://localhost:8000/ws/audio")
     p_end.add_argument("--scenarios", default="all")
     p_end.add_argument("--repeats", type=int, default=1)
@@ -295,7 +295,7 @@ def main(argv=None) -> int:
     p_end.add_argument("--timeout", type=float, default=120.0)
     p_end.add_argument("--out", default=None, help="write report JSON+markdown")
     p_end.add_argument("--events", default="bench/events/latest.json", help="write raw event timelines JSON")
-    p_end.add_argument("--label", default="TASA")
+    p_end.add_argument("--label", default="Bolo")
 
     p_off = sub.add_parser("offline", help="Run offline deterministic metrics (CER, EOT F1, prosody, emotion)")
     p_off.add_argument("--scenarios", default="all")
@@ -320,7 +320,7 @@ def main(argv=None) -> int:
     )
     p_laya_export.add_argument(
         "--input", default=None,
-        help="shadow JSONL (default: TASA_LAYA_SHADOW_LOG / ~/.tasa/shadow/rows.jsonl)",
+        help="shadow JSONL (default: BOLO_LAYA_SHADOW_LOG / ~/.bolo/shadow/rows.jsonl)",
     )
     p_laya_export.add_argument(
         "--out", default="training.laya.jsonl", help="write samples JSONL"
@@ -340,7 +340,7 @@ def main(argv=None) -> int:
     )
     p_laya_ft.add_argument(
         "--data", default="training.laya.jsonl",
-        help="self-labelled samples from `tasa-bench laya-export`",
+        help="self-labelled samples from `bolo-bench laya-export`",
     )
     p_laya_ft.add_argument(
         "--gold", default="bench/gold/laya_gold.json",
@@ -368,7 +368,7 @@ def main(argv=None) -> int:
         help="Realtime latency probe: stream your mic to /ws/audio and record every turn's timing",
     )
     p_live.add_argument("--url", default="ws://localhost:8000/ws/audio",
-                        help="TASA /ws/audio endpoint")
+                        help="Bolo /ws/audio endpoint")
     p_live.add_argument("--file", default=None,
                         help="replay a 16000Hz mono WAV instead of using the mic")
     p_live.add_argument("--device", type=int, default=None,

@@ -1,7 +1,7 @@
-"""Verification harness for TASA turn-end / VAD / endpointing metrics.
+"""Verification harness for Bolo turn-end / VAD / endpointing metrics.
 
 Drives a :class:`StreamingPipeline` with scripted speech/silence frames (and
-optionally real providers for the live GPT-vs-TASA rerun, Phase 4), observes the
+optionally real providers for the live GPT-vs-Bolo rerun, Phase 4), observes the
 emitted :class:`~core.pipeline.PipelineEvent` stream, and computes the endpoint /
 barge-in quality metrics and their acceptance targets.
 

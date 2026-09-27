@@ -34,7 +34,7 @@ class TestSessionMemory:
     def test_context_messages(self) -> None:
         m = SessionMemory()
         m.add("user", "hello")
-        msgs = m.context_messages(system_prompt="You are TASA.")
+        msgs = m.context_messages(system_prompt="You are Bolo.")
         assert len(msgs) == 2
         assert msgs[0]["role"] == "system"
         assert msgs[1]["role"] == "user"

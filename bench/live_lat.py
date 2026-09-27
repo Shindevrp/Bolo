@@ -1,4 +1,4 @@
-"""Realtime latency recorder for TASA's WebSocket voice endpoint.
+"""Realtime latency recorder for Bolo's WebSocket voice endpoint.
 
 Streams the user's microphone (or a WAV file) to ``/ws/audio`` and, on the
 background, records every pipeline event with a client-side timestamp to
@@ -154,7 +154,7 @@ def load_trace(path: str) -> list[dict[str, Any]]:
 def summarize(turns: list[dict[str, Any]]) -> dict[str, Any]:
     stats: dict[str, Any] = {"count": len(turns)}
     for key, _label in STAGES:
-        # Negative deltas happen when TASA streams TTS before llm_done; those
+        # Negative deltas happen when Bolo streams TTS before llm_done; those
         # buckets carry no latency meaning and are excluded.
         vals = sorted(
             t[key] for t in turns if key in t and t[key] is not None and t[key] >= 0
@@ -388,8 +388,8 @@ def cmd_live(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="tasa-live", description=__doc__.splitlines()[0])
-    p.add_argument("--url", default=_DEFAULT_WS_URL, help="TASA /ws/audio endpoint")
+    p = argparse.ArgumentParser(prog="bolo-live", description=__doc__.splitlines()[0])
+    p.add_argument("--url", default=_DEFAULT_WS_URL, help="Bolo /ws/audio endpoint")
     p.add_argument("--file", default=None, help="replay a 16000Hz mono WAV instead of mic")
     p.add_argument("--device", type=int, default=None, help="input device index (mic)")
     p.add_argument("--playback-rate", type=int, default=22050, help="TTS playback rate")

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TASA — WebRTC</title>
+<title>Bolo — WebRTC</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(ellipse at 50% 0%,#0B1A2E 0%,#020617 70%);color:rgba(255,255,255,.85);min-height:100vh;display:flex;justify-content:center;padding:1rem}
@@ -42,7 +42,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
 <body>
 <div class="container">
   <div class="card header">
-    <h1>TASA</h1>
+    <h1>Bolo</h1>
     <div class="sub">WebRTC voice AI</div>
   </div>
   <div class="card">
@@ -76,7 +76,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
     if(!append||!c.lastElementChild||!c.lastElementChild.classList.contains('msg.'+role)){
       var el=document.createElement('div');
       el.className='msg '+role;
-      el.innerHTML='<span class="lbl">'+(role==='user'?'You':role==='assistant'?'TASA':'System')+'</span><span class="txt">'+esc(text)+'</span>';
+      el.innerHTML='<span class="lbl">'+(role==='user'?'You':role==='assistant'?'Bolo':'System')+'</span><span class="txt">'+esc(text)+'</span>';
       c.appendChild(el);
     }else{
       c.lastElementChild.querySelector('.txt').textContent+=esc(text);
@@ -161,12 +161,12 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
         else if(m.type==='partial_transcript'){dbg('Heard: '+m.text.slice(0,60));}
         else if(m.type==='transcript'){if(audioEl){audioEl.volume=1;}addMsg('user',m.text);dbg('You: '+m.text.slice(0,40));}
         else if(m.type==='llm_token'){
-          if(!c.querySelector('.msg.assistant')){sts('talk','Speaking...');dbg('TASA responding...');}
+          if(!c.querySelector('.msg.assistant')){sts('talk','Speaking...');dbg('Bolo responding...');}
           addMsg('assistant',m.token,true);
         }
         else if(m.type==='llm_done'){sts('','Done');dbg('Response complete');}
         else if(m.type==='tts_done'){sts('on','Listening...');dbg('TTS done, listening');}
-        else if(m.type==='backchannel'){dbg('TASA: '+m.text);}
+        else if(m.type==='backchannel'){dbg('Bolo: '+m.text);}
         else if(m.type==='prosody'){dbg('Tone: '+m.label+((m.emotion)?' ['+m.emotion+']':''));}
         else if(m.type==='interrupt'){duckAudio();sts('on','Listening...');dbg('Interruption detected');}
         else if(m.type==='status'){dbg(m.text);}

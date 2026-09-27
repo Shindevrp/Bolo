@@ -1,7 +1,7 @@
 [project]
-name = "tasa"
+name = "bolo"
 version = "0.1.0"
-description = "TASA real-time conversational assistant"
+description = "Bolo - grounded voice search agent built on SerpApi"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -36,7 +36,7 @@ all = [
 dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0"]
 
 [project.scripts]
-tasa = "app.cli:main"
+bolo = "app.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

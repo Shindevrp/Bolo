@@ -26,7 +26,7 @@ async def chat_stream(request: Request):
             {
                 "role": "system",
                 "content": (
-                    "You are TASA, a real-time conversational assistant. "
+                    "You are Bolo, a real-time conversational assistant. "
                     "Respond concisely and naturally. Keep responses short, "
                     "conversational, and human-like."
                 ),
@@ -71,7 +71,7 @@ async def chat_once(request: Request):
         {
             "role": "system",
             "content": (
-                "You are TASA, a real-time conversational assistant. "
+                "You are Bolo, a real-time conversational assistant. "
                 "Respond concisely and naturally. Keep responses short, "
                 "conversational, and human-like."
             ),

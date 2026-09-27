@@ -1,6 +1,6 @@
 """Phase-2 (enforcement) behavior of the System-1 decision layer.
 
-Phase-2 is opt-in via ``phase2=True`` on the pipeline (or TASA_LAYA_PHASE2=1).
+Phase-2 is opt-in via ``phase2=True`` on the pipeline (or BOLO_LAYA_PHASE2=1).
 All checks here either prove the fail-open fallback (weak/missing Laya answers
 keep legacy behavior) or the conservative routing guarantees agreed at design
 time: urgent = latency modifier only, LLM-skip only when a deterministic

@@ -1,6 +1,6 @@
 """Offline prosody evaluation.
 
-Prosody in TASA is a *decision* (per-utterance Piper parameters chosen by
+Prosody in Bolo is a *decision* (per-utterance Piper parameters chosen by
 `ProsodySelector`) plus its *expression* (the linguistic cues the selector keys
 on: question marks, ALL-CAPS emphasis, commas, ellipses, numbered lists). This
 module scores that contract deterministically, without a listener:
@@ -31,7 +31,7 @@ def expected_profile(text: str, **context) -> dict:
     """Profile `ProsodySelector` would produce for `text` in `context`.
 
     Imported lazily so the offline scoring layer stays usable without the full
-    TASA module tree loaded (the selector itself has no heavy dependencies).
+    Bolo module tree loaded (the selector itself has no heavy dependencies).
     Also derives the *cue expectations* the label encodes (question / emphatic
     / thoughtful / list), so compliance can be checked against the text.
     """

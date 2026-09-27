@@ -1,6 +1,6 @@
 """Phase-5 (complexity-routing gate) behavior of the System-1 decision layer.
 
-Phase 5 is opt-in via ``phase5=True`` (or TASA_LAYA_PHASE5=1). A bare
+Phase 5 is opt-in via ``phase5=True`` (or BOLO_LAYA_PHASE5=1). A bare
 multi-word acknowledgment ("sounds good", "that works") is answered with a
 deterministic reply instead of the LLM ONLY when a confident Laya capstone
 verdict marks it trivial: complex is simple, not a question, not urgent, and

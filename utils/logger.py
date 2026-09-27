@@ -6,6 +6,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from typing import Any
+from core.env import env
 
 _KNOWN_ATTRS = {
     "args", "asctime", "created", "exc_info", "exc_text", "filename",
@@ -31,11 +32,11 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log, default=str)
 
 
-def get_logger(name: str = "TASA", level: int = logging.INFO) -> logging.Logger:
-    logger = logging.getLogger(f"TASA.{name}" if name != "TASA" else "TASA")
+def get_logger(name: str = "Bolo", level: int = logging.INFO) -> logging.Logger:
+    logger = logging.getLogger(f"Bolo.{name}" if name != "Bolo" else "Bolo")
     if logger.handlers:
         return logger
-    env_level = os.getenv("TASA_LOG_LEVEL", "").strip().upper()
+    env_level = env("LOG_LEVEL", "").strip().upper()
     if env_level == "DEBUG":
         level = logging.DEBUG
     logger.setLevel(level)
@@ -46,4 +47,4 @@ def get_logger(name: str = "TASA", level: int = logging.INFO) -> logging.Logger:
     return logger
 
 
-logger = get_logger("TASA")
+logger = get_logger("Bolo")

@@ -2,7 +2,7 @@
 
 The shadow deque stays bounded and in-memory for ``shadow_report()``; when a
 ``shadow_log`` path is configured every entry also goes to a JSONL file, and
-``training_samples()`` / ``tasa-bench laya-export`` turn the agreed rows into
+``training_samples()`` / ``bolo-bench laya-export`` turn the agreed rows into
 fine-tuning data for Step 3.
 """
 from __future__ import annotations
@@ -199,11 +199,12 @@ class TestExport:
 
 class TestConfigWiring:
     def test_default_path_wired_for_server(self, monkeypatch) -> None:
-        monkeypatch.delenv("TASA_LAYA_SHADOW_LOG", raising=False)
-        assert CoreConfig().laya_shadow_log == "~/.tasa/shadow/rows.jsonl"
+        monkeypatch.delenv("BOLO_LAYA_SHADOW_LOG", raising=False)
+        monkeypatch.delenv("BOLO_LAYA_SHADOW_LOG", raising=False)
+        assert CoreConfig().laya_shadow_log == "~/.bolo/shadow/rows.jsonl"
 
     def test_empty_env_disables_disk_writes(self, monkeypatch) -> None:
-        monkeypatch.setenv("TASA_LAYA_SHADOW_LOG", "")
+        monkeypatch.setenv("BOLO_LAYA_SHADOW_LOG", "")
         assert CoreConfig().laya_shadow_log == ""
         c = LayaSystem1(enabled=False, agent=None)
         assert c._store is None

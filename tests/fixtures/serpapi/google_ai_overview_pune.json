@@ -1,0 +1,89 @@
+{
+  "search_parameters": {
+    "engine": "google",
+    "q": "population of pune",
+    "gl": "in",
+    "hl": "en"
+  },
+  "ai_overview": {
+    "text_blocks": [
+      {
+        "type": "paragraph",
+        "snippet": "The estimated population of Pune city in 2026 is approximately 4.7 million, while the broader metropolitan region is estimated at around 7.6 to 7.9 million people.",
+        "snippet_highlighted_words": [
+          "4.7 million"
+        ]
+      },
+      {
+        "type": "heading",
+        "snippet": "Population Breakdown"
+      },
+      {
+        "type": "list",
+        "list": [
+          {
+            "snippet": "Pune City: Estimated at 4,706,000 (2026 projections based on past growth rates)."
+          },
+          {
+            "snippet": "Pune Metropolitan Region (PMR): Estimated between 7.6 million and 7.9 million residents."
+          },
+          {
+            "snippet": "Pune District: Recorded at 9,429,408 during the last official Census of India in 2011."
+          }
+        ]
+      },
+      {
+        "type": "paragraph",
+        "snippet": "If you need more specific details, let me know if you are looking for:"
+      },
+      {
+        "type": "list",
+        "list": [
+          {
+            "snippet": "Demographics like literacy or gender ratio"
+          },
+          {
+            "snippet": "Growth rates compared to other Maharashtra cities"
+          }
+        ]
+      }
+    ],
+    "references": [
+      {
+        "link": "https://www.census2011.co.in/census/city/375-pune.html",
+        "source": "census2011.co.in",
+        "index": 0
+      },
+      {
+        "link": "https://worldpopulationreview.com/cities/india/pune",
+        "source": "worldpopulationreview.com",
+        "index": 1
+      },
+      {
+        "link": "https://www.census2011.co.in/census/district/359-pune.html",
+        "source": "census2011.co.in",
+        "index": 2
+      }
+    ]
+  },
+  "organic_results": [
+    {
+      "position": 1,
+      "title": "Pune Population 2026 - Metro City Census Data",
+      "link": "https://indiacensus.in/metro-cities/pune/",
+      "snippet": "As per Census 2011, Pune Urban Agglomeration had a total population of 50,57,709. Out of this, 26,56,240 were males (52.5%) and 24,01,469 were females (47.5%)."
+    },
+    {
+      "position": 2,
+      "title": "Pune City Population Likely To Reach 1 Crore In 2047",
+      "link": "https://www.punekarnews.in/pune-city-population-likely-to-reach-1-crore-in-2047-pmc-report/",
+      "snippet": "Similarly, the population is likely to reach 41,21,663 in 2047 as per the prediction using Arithmetical Increase method, 46,70,797 in 2042 and ..."
+    },
+    {
+      "position": 3,
+      "title": "Male Village Population - Bhor - Pune, Maharashtra",
+      "link": "https://www.census2011.co.in/data/village/556744-male-maharashtra.html",
+      "snippet": "The Male village has population of 1034 of which 556 are males while 478 are females as per Population Census 2011. In Male village population of children with ..."
+    }
+  ]
+}

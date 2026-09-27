@@ -28,7 +28,7 @@ def _http_get_json(url: str, retries: int = 2) -> dict:
     attempt = 0
     while True:
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "TASA/1.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "Bolo/1.0"})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
@@ -116,6 +116,35 @@ def _answer_box(box: dict[str, Any]) -> str:
     return ""
 
 
+def _ai_overview(ov: dict[str, Any]) -> str:
+    """Google's AI overview, when SerpApi inlines it: the lead paragraph
+    (plus the first bullets when that paragraph is only a heading-like
+    stub), tagged with its first reference. An overview that only carries a
+    ``page_token`` needs a second paid call and is skipped."""
+    blocks = ov.get("text_blocks")
+    if not isinstance(blocks, list):
+        return ""
+    lead = ""
+    bullets: list[str] = []
+    for b in blocks:
+        if not isinstance(b, dict):
+            continue
+        if not lead and b.get("type") == "paragraph":
+            lead = _clean(b.get("snippet"))
+        elif lead and b.get("type") == "list" and not bullets:
+            bullets = [
+                _clean(i.get("snippet")) for i in (b.get("list") or [])[:2]
+                if isinstance(i, dict) and i.get("snippet")
+            ]
+            break
+    if not lead:
+        return ""
+    text = lead if len(lead) >= 80 or not bullets else f"{lead} {'; '.join(bullets)}"
+    refs = ov.get("references") or []
+    src = refs[0].get("source") if refs and isinstance(refs[0], dict) else ""
+    return f"{text} ({_clean(src)})" if src else text
+
+
 def _knowledge_graph(kg: dict[str, Any]) -> str:
     title = str(kg.get("title", "")).strip()
     desc = str(kg.get("description", "")).strip()
@@ -129,14 +158,19 @@ def _knowledge_graph(kg: dict[str, Any]) -> str:
 def condense_google(data: dict[str, Any], n_organic: int = 2) -> str:
     """Google results -> a short, speakable, sourced summary.
 
-    Priority: answer box, then knowledge graph, then the top organic
-    results; each organic line carries its source domain.
+    Priority: answer box, else Google's AI overview; then the knowledge
+    graph; then the top organic results, each tagged with its source
+    domain.
     """
     parts: list[str] = []
     box = data.get("answer_box")
     if isinstance(box, dict):
         if (a := _answer_box(box)):
             parts.append(a)
+    ov = data.get("ai_overview")
+    if not parts and isinstance(ov, dict):
+        if (o := _ai_overview(ov)):
+            parts.append(o)
     kg = data.get("knowledge_graph")
     if isinstance(kg, dict):
         if (k := _knowledge_graph(kg)):

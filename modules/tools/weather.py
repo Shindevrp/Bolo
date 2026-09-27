@@ -10,7 +10,7 @@ async def get_weather(city: str) -> str:
     try:
         encoded = urllib.parse.quote(city.strip())
         url = f"https://wttr.in/{encoded}?format=j1"
-        req = urllib.request.Request(url, headers={"User-Agent": "TASA/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "Bolo/1.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
 

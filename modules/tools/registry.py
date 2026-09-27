@@ -248,3 +248,42 @@ class ToolRegistry:
         results = await asyncio.gather(*[self.execute_call(c) for c in calls])
         cleaned = self.strip_calls(text)
         return cleaned, results
+
+
+class ToolMarkerFilter:
+    """Streams LLM text with any ``{tool:...}`` call cut out of it.
+
+    Tokens arrive in fragments ("{", "tool", ":"), so a naive "is the marker
+    in the text yet?" check lets "{tool" reach the screen and TTS before the
+    call is recognised. This holds back any trailing text that could still
+    become the marker, and once the marker appears, emits nothing further.
+    """
+
+    MARKER = "{tool:"
+
+    def __init__(self) -> None:
+        self._held = ""
+        self.seen = False
+
+    def feed(self, token: str) -> str:
+        """Return the part of *token* that is safe to show and speak now."""
+        if self.seen:
+            return ""
+        buf = self._held + token
+        i = buf.find(self.MARKER)
+        if i != -1:
+            self.seen = True
+            self._held = ""
+            return buf[:i]
+        for k in range(min(len(self.MARKER) - 1, len(buf)), 0, -1):
+            if self.MARKER.startswith(buf[-k:]):
+                self._held = buf[-k:]
+                return buf[:-k]
+        self._held = ""
+        return buf
+
+    def flush(self) -> str:
+        """Held-back text once the stream ends (it was not a tool call)."""
+        out = "" if self.seen else self._held
+        self._held = ""
+        return out

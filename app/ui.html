@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TASA — Conversational AI</title>
+<title>Bolo — Conversational AI</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(ellipse at 50% 0%,#0B1A2E 0%,#020617 70%);color:rgba(255,255,255,.85);min-height:100vh;display:flex;justify-content:center;padding:1rem}
@@ -58,7 +58,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
 <body>
 <div class="container">
   <div class="card header">
-    <h1>TASA</h1>
+    <h1>Bolo</h1>
     <div class="sub">conversational voice AI</div>
   </div>
 
@@ -133,7 +133,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
     var box=mode==='hybrid'?c:c;
     var empty=box.querySelector('.empty-state');
     if(empty)empty.remove();
-    var lbl=role==='user'?'You':role==='assistant'?'TASA':'System';
+    var lbl=role==='user'?'You':role==='assistant'?'Bolo':'System';
     if(!append||!box.lastElementChild||box.lastElementChild.className.indexOf('msg '+role)===-1){
       var el=document.createElement('div');
       el.className='msg '+role;
@@ -237,12 +237,12 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
           else if(m.type==='partial_transcript'){dbg('Heard: '+m.text.slice(0,60));}
           else if(m.type==='transcript'){addMsg('user',m.text);dbg('You: '+m.text.slice(0,40));}
           else if(m.type==='llm_token'){
-            if(!c.querySelector('.msg.assistant')){sts('talk','Speaking...');dbg('TASA responding...');}
+            if(!c.querySelector('.msg.assistant')){sts('talk','Speaking...');dbg('Bolo responding...');}
             addMsg('assistant',m.token,true);
           }
           else if(m.type==='llm_done'){sts('','Done');dbg('Response complete');}
           else if(m.type==='tts_done'){if(act)sts('on','Listening...');dbg('TTS done');}
-          else if(m.type==='backchannel'){dbg('TASA: '+m.text);}
+          else if(m.type==='backchannel'){dbg('Bolo: '+m.text);}
           else if(m.type==='prosody'){dbg('Tone: '+m.label+((m.emotion)?' ['+m.emotion+']':''));}
           else if(m.type==='interrupt'){duckAudio();sts('on','Listening...');dbg('Interruption detected');}
           else if(m.type==='status'){dbg(m.text);}
@@ -301,14 +301,14 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
     if(empty)empty.remove();
     var el=document.createElement('div');
     el.className='msg '+role;
-    el.innerHTML='<span class="lbl">'+(role==='user'?'You':role==='assistant'?'TASA':'System')+'</span><span class="txt">'+esc(text)+'</span>';
+    el.innerHTML='<span class="lbl">'+(role==='user'?'You':role==='assistant'?'Bolo':'System')+'</span><span class="txt">'+esc(text)+'</span>';
     tc.appendChild(el);tc.scrollTop=tc.scrollHeight;
   }
   function sendText(){
     var msg=ti.value.trim();if(!msg)return;
     ti.value='';tAdd('user',msg);
     var last=document.createElement('div');last.className='msg assistant';
-    last.innerHTML='<span class="lbl">TASA</span><span class="txt">...</span>';
+    last.innerHTML='<span class="lbl">Bolo</span><span class="txt">...</span>';
     tc.appendChild(last);tc.scrollTop=tc.scrollHeight;
     var xhr=new XMLHttpRequest();
     xhr.open('POST',(location.protocol==='https:'?'https:':'http:')+'//'+location.host+'/chat/stream',true);
@@ -321,12 +321,12 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
         if(!line.startsWith('data: '))continue;
         try{
           var p=JSON.parse(line.slice(6));
-          if(p.type==='token'){full+=p.token;last.innerHTML='<span class="lbl">TASA</span><span class="txt">'+esc(full)+'</span>';}
+          if(p.type==='token'){full+=p.token;last.innerHTML='<span class="lbl">Bolo</span><span class="txt">'+esc(full)+'</span>';}
         }catch(e){}
       }
     };
-    xhr.onload=function(){if(last)last.innerHTML='<span class="lbl">TASA</span><span class="txt">'+esc(full)+'</span>';};
-    xhr.onerror=function(){last.innerHTML='<span class="lbl">TASA</span><span class="txt" style="color:#EF4444">Connection error</span>';};
+    xhr.onload=function(){if(last)last.innerHTML='<span class="lbl">Bolo</span><span class="txt">'+esc(full)+'</span>';};
+    xhr.onerror=function(){last.innerHTML='<span class="lbl">Bolo</span><span class="txt" style="color:#EF4444">Connection error</span>';};
     xhr.send(JSON.stringify({message:msg}));
   }
   ti.addEventListener('keydown',function(e){if(e.key==='Enter')sendText();});

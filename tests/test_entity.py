@@ -189,3 +189,43 @@ class TestEndToEndEntityGuard:
         assert "Bajji Anagar" not in recorded
         assert any(e == PipelineEvent.ENTITY_GUARD for e in events)
         assert "not certain that place actually exists" in recorded
+
+
+class TestLiveFalsePositives:
+    """Regressions from a live session: ordinary replies were replaced with
+    "I'm not certain that place exists"."""
+
+    def test_sentence_opening_words_are_not_names(self) -> None:
+        for text in (
+            "Based on the weather data, it's clear. Winds are light. Would you like more?",
+            "For the current population, let me check. Could you repeat that?",
+        ):
+            assert EntityGate.extract_entities(text) == [], text
+
+    def test_two_word_name_opening_a_sentence_still_counts(self) -> None:
+        assert EntityGate.extract_entities("Paradise Biryani is great.") == ["Paradise Biryani"]
+
+    def test_partial_name_backed_by_tool_text(self) -> None:
+        result = "Paradise Biryani, 4.1 stars | Shah Ghouse, 4.0 stars"
+        assert EntityGate.unsupported_entities("I'd go to Paradise first.", {result}) == []
+        assert EntityGate.unsupported_entities("Try Bawarchi House.", {result}) == ["Bawarchi House"]
+
+    def test_query_words_match_whole_words(self) -> None:
+        assert not EntityGate.query_needs_verification("where is parking allowed")
+        assert EntityGate.query_needs_verification("where's a good park")
+
+
+class TestToolMarkerFilter:
+    def _run(self, tokens):
+        from modules.tools.registry import ToolMarkerFilter
+
+        f = ToolMarkerFilter()
+        out = "".join(f.feed(t) for t in tokens) + f.flush()
+        return out, f.seen
+
+    def test_split_marker_is_held_back(self) -> None:
+        assert self._run(["Hi. ", "{", "to", "ol", ":x()}"]) == ("Hi. ", True)
+
+    def test_brace_that_is_not_a_tool_is_released(self) -> None:
+        assert self._run(["a {", "b} c"]) == ("a {b} c", False)
+        assert self._run(["ends with {to"]) == ("ends with {to", False)

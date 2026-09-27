@@ -87,7 +87,7 @@ class SessionState:
             return "The user seems disengaged. Keep responses very brief and inviting."
         if self.engagement_score > 0.8:
             return "The user is highly engaged. Feel free to be more conversational."
-        return "You are TASA, a real-time conversational assistant. Respond concisely and naturally."
+        return "You are Bolo, a real-time conversational assistant. Respond concisely and naturally."
 
     def _update_engagement(self) -> None:
         recency = 1.0 if self.total_user_turns > 0 else 0.3

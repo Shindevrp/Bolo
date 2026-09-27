@@ -57,38 +57,43 @@ class EntityGate:
         Conservative: only flags genuine entity-seeking queries whose answer
         would require verifiable facts (places, businesses, etc.).
         """
-        tl = text.lower()
-        return any(w in tl for w in ENTITY_QUERY_WORDS)
+        # Whole words only: "park" must not fire on "parking", nor "bank"
+        # on "bankrupt".
+        words = set(re.findall(r"[a-zé]+", text.lower()))
+        return bool(words & ENTITY_QUERY_WORDS)
 
     @staticmethod
     def extract_entities(text: str) -> list[str]:
         """Return capitalized looks-like-proper-noun runs (place/business names).
 
-        A run is at least one capitalized word following a capitalized word, or
-        a capitalized word directly after an assertion cue. Sentence-opening
-        function words (Try, Go, Yes, The, This, ...) are never treated as
-        entity starts.
+        A run is one or more consecutive capitalized words. Sentence-opening
+        function words (Try, Go, Yes, The, This, ...) are never entity
+        starts, and a lone capitalized word opening a sentence ("Based on",
+        "Would you", "Let me") is ordinary capitalisation, not a name -- a
+        two-word run there ("Paradise Biryani is ...") still counts.
         """
         words = re.findall(r"[A-Z][a-zA-Z]+|\S+", text)
         candidates: list[str] = []
         runs: list[str] = []
-        prev_capitalized_word = False
+        run_at_sentence_start = False
+        sentence_start = True
+
+        def close() -> None:
+            if runs and not (len(runs) == 1 and run_at_sentence_start):
+                candidates.append(" ".join(runs))
+
         for w in words:
             if w not in _CAP_FUNCTION_WORDS and re.match(r"^[A-Z][a-zA-Z]+$", w):
-                if prev_capitalized_word:
-                    runs.append(w)
-                else:
-                    if len(runs) >= 1:
-                        candidates.append(" ".join(runs))
-                    runs = [w]
-                prev_capitalized_word = True
+                if not runs:
+                    run_at_sentence_start = sentence_start
+                runs.append(w)
             else:
-                prev_capitalized_word = False
-                if len(runs) >= 1:
-                    candidates.append(" ".join(runs))
-                    runs = []
-        if len(runs) >= 1:
-            candidates.append(" ".join(runs))
+                close()
+                runs = []
+            sentence_start = bool(re.search(r"[.!?:;\-•*]$", w)) or (
+                sentence_start and w in _CAP_FUNCTION_WORDS
+            )
+        close()
         return candidates
 
     @staticmethod
@@ -102,15 +107,18 @@ class EntityGate:
 
         An entity is 'supported' if it appeared in a tool result, in
         retrieval/context, or was originally provided by the user (so the
-        model is allowed to reference/echo what the user said). Unsupported
+        model is allowed to reference/echo what the user said). *supported*
+        may hold names or whole evidence texts: a name counts as supported
+        when it occurs as whole words inside any of them, so "Paradise" is
+        backed by a result naming "Paradise Biryani". Unsupported
         capitalized runs are treated as potential fabrications.
         """
-        user_entities = {e.lower() for e in (user_input_entities or set())}
-        supported_low = {e.lower() for e in supported}
+        evidence = [e.lower() for e in supported]
+        evidence += [e.lower() for e in (user_input_entities or set())]
         blocked: list[str] = []
         for ent in EntityGate.extract_entities(response):
-            low = ent.lower()
-            if low in supported_low or low in user_entities:
+            pat = re.compile(rf"\b{re.escape(ent.lower())}\b")
+            if any(pat.search(e) for e in evidence):
                 continue
             blocked.append(ent)
         return blocked

@@ -2,7 +2,7 @@
 
 Step 2 of the approved latency/quality plan: every turn's shadow rows
 (Laya-vs-legacy decisions) are appended to a JSONL file so the collection
-survives restarts, and `tasa-bench laya-export` can turn the agreed rows
+survives restarts, and `bolo-bench laya-export` can turn the agreed rows
 into fine-tuning samples for Step 3 (retraining the probe on self-labels).
 
 The write path is deliberately shallow: one append + flush per turn under a
@@ -20,7 +20,7 @@ from utils.logger import get_logger
 
 logger = get_logger("laya.store")
 
-DEFAULT_SHADOW_LOG = "~/.tasa/shadow/rows.jsonl"
+DEFAULT_SHADOW_LOG = "~/.bolo/shadow/rows.jsonl"
 
 
 def _expand(path: str) -> str:

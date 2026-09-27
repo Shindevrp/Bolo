@@ -3,8 +3,8 @@
 These are the "conversational mechanics" metrics that answer, per run, how well
 the agent manages turn-taking boundaries and interruption behaviour:
 
-  False Endpoint Rate       How often TASA cuts the user off
-  Missed Endpoint Rate      How often TASA waits after the user finished
+  False Endpoint Rate       How often Bolo cuts the user off
+  Missed Endpoint Rate      How often Bolo waits after the user finished
   Endpoint P50/P95          Typical/worst response-start delay
   Utterance Fragment Rate   How often one thought becomes multiple turns
   Completion Capture Rate   % of utterances captured completely
@@ -262,7 +262,7 @@ def compute_endpoint_metrics(samples: EndpointSample) -> dict[str, MetricResult]
     )
 
     # --- 2. Missed Endpoint Rate ---
-    # TASA waits too long after the user has finished: the response arrives
+    # Bolo waits too long after the user has finished: the response arrives
     # only beyond ENDPOINT_LATE_S after speech_end, or never. Turns where the
     # agent actually cut the user off (false endpoint) do NOT count as missed —
     # the agent did not wait, it pre-empted (but they stay in the denominator).
@@ -462,8 +462,8 @@ def analyze_results(results: list[ScenarioResult], spoken_by_scenario: dict[str,
 # ---------------------------------------------------------------------------
 
 _ROWS = [
-    ("False Endpoint Rate",     "false_endpoint_rate",     "how often TASA cuts the user off"),
-    ("Missed Endpoint Rate",    "missed_endpoint_rate",    "how often TASA waits after the user finished"),
+    ("False Endpoint Rate",     "false_endpoint_rate",     "how often Bolo cuts the user off"),
+    ("Missed Endpoint Rate",    "missed_endpoint_rate",    "how often Bolo waits after the user finished"),
     ("Endpoint P50",            "endpoint_p50",            "typical response-start delay"),
     ("Endpoint P95",            "endpoint_p95",            "worst response-start delay"),
     ("Utterance Fragment Rate", "utterance_fragment_rate", "how often one thought becomes multiple turns"),

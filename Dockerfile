@@ -31,13 +31,13 @@ COPY utils/ utils/
 COPY bench/ bench/
 COPY streamlit_app.py ./
 
-ENV TASA_STT_MODEL=base
-ENV TASA_STT_DEVICE=cpu
-ENV TASA_STT_COMPUTE=int8
-ENV TASA_LLM_URL=http://vllm:8000/v1
-ENV TASA_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct-AWQ
-ENV TASA_TTS_MODEL=/app/models/piper/en_US-lessac-medium.onnx
-ENV TASA_VAD_THRESHOLD=0.5
+ENV BOLO_STT_MODEL=base
+ENV BOLO_STT_DEVICE=cpu
+ENV BOLO_STT_COMPUTE=int8
+ENV BOLO_LLM_URL=http://vllm:8000/v1
+ENV BOLO_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct-AWQ
+ENV BOLO_TTS_MODEL=/app/models/piper/en_US-lessac-medium.onnx
+ENV BOLO_VAD_THRESHOLD=0.5
 
 RUN mkdir -p /app/models/piper && python3 <<EOF
 import urllib.request, pathlib

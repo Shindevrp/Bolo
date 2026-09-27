@@ -1,6 +1,6 @@
-"""TASA WebSocket adapter.
+"""Bolo WebSocket adapter.
 
-Talks to TASA's /ws/audio endpoint (binary 16kHz PCM in, JSON control in,
+Talks to Bolo's /ws/audio endpoint (binary 16kHz PCM in, JSON control in,
 JSON events + binary TTS audio out) and normalizes everything to the
 bench.agent.base protocol.
 
@@ -21,7 +21,7 @@ import time
 from bench.agent.base import Event, EventType, SpeechAgent
 
 
-class TasaWSAdapter(SpeechAgent):
+class BoloWSAdapter(SpeechAgent):
     sample_rate = 16000
 
     def __init__(self, url: str = "ws://localhost:8000/ws/audio", timeout: float = 60.0):
@@ -48,7 +48,7 @@ class TasaWSAdapter(SpeechAgent):
         self._ws = None
 
     async def reset_session(self) -> None:
-        # TASA keys fresh conversation state per WebSocket connection.
+        # Bolo keys fresh conversation state per WebSocket connection.
         await self.close()
         await self.connect()
 

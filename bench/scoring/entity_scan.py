@@ -6,7 +6,7 @@ Provides honest, black-box proxies for hallucination risk:
   - list common uncertainty phrases.
 
 This is a heuristic, not a ground-truth existence check — that is the honest
-limit of a black-box harness, and it mirrors TASA's own EntityGate.
+limit of a black-box harness, and it mirrors Bolo's own EntityGate.
 """
 from __future__ import annotations
 

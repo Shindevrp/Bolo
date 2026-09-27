@@ -199,7 +199,7 @@
     }
   },
   "metadata": {
-    "agent_kind": "tasa-ws",
+    "agent_kind": "bolo-ws",
     "base_url": "ws://localhost:8000/ws/audio",
     "scenarios": [
       "asr_wer",
