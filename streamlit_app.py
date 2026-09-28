@@ -40,6 +40,22 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+st.markdown(
+    """
+<div style="display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;
+            border-bottom:1px solid #1e293b; padding-bottom:12px; margin-bottom:8px;">
+  <span style="font-size:28px; font-weight:700; color:#e2e8f0; letter-spacing:-1px;">Bolo</span>
+  <span style="font-size:13px; color:#64748b; font-family:ui-monospace,SFMono-Regular,monospace;">
+    live session &middot; grounded voice search via SerpApi</span>
+  <span style="margin-left:auto; font-size:12px; color:#475569;
+            font-family:ui-monospace,SFMono-Regular,monospace;">
+    <a href="{ui}/ui" target="_blank" style="color:#38bdf8; text-decoration:none;">open voice UI &rarr;</a>
+  </span>
+</div>
+""".format(ui=UI_URL),
+    unsafe_allow_html=True,
+)
+
 
 @st.fragment(run_every="2s")
 def session_status() -> None:
