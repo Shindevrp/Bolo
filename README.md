@@ -14,6 +14,7 @@
 <p style="font-size:15px; color:#8b949e; margin:18px auto 0; max-width:690px; line-height:1.7;">Bolo is a real-time voice agent that looks things up <b style="color:#c9d1d9;">mid-utterance</b>. A 421M-parameter decision model reads every partial transcript, so the <a href="https://serpapi.com" style="color:#58a6ff; text-decoration:none;">SerpApi</a> request is already in flight while you are still speaking. Results are condensed to one or two speakable sentences, with every fact tied to the source it came from.</p>
 
 <p style="margin:28px auto 0; max-width:720px; font-family:ui-monospace,SFMono-Regular,monospace; font-size:11px; letter-spacing:1.1px;">
+<a href="#demo" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #f0b72f; border-radius:6px; background:#1c1500; color:#f0b72f; text-decoration:none;">DEMO</a>
 <a href="#why" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">WHY</a>
 <a href="#quick-start" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">QUICK START</a>
 <a href="#serpapi" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #f0b72f; border-radius:6px; background:#1c1500; color:#f0b72f; text-decoration:none;">SERPAPI</a>
@@ -44,6 +45,35 @@
 
 </div>
 </div>
+
+---
+
+<a name="demo"></a>
+## Demo
+
+<div align="center">
+
+<video src="videos/bolo-full-2min/renders/bolo-2min-demo.mp4" controls width="820">
+Your browser doesn't support embedded video — the file is at
+<code>videos/bolo-full-2min/renders/bolo-2min-demo.mp4</code>.
+</video>
+
+<p style="color:#8b949e; font-size:13px; margin:12px auto 0; max-width:700px; line-height:1.6;">2 minutes, narrated. Voice pipeline + barge-in &rarr; the SerpApi tool chain (<code>search_web</code> / <code>search_places</code> / <code>get_news</code> &rarr; <code>SerpApiClient.search()</code> &rarr; <code>providers/search/serpapi.py</code> &rarr; <code>modules/tools/registry.py</code> &rarr; <code>core/pipeline.py</code>) &rarr; a live credit gate &rarr; a 3-turn demo chain (flights &rarr; morning refinement &rarr; hotels), grounded start to finish in real SerpApi results.</p>
+
+</div>
+
+<table align="center">
+<tr>
+<td align="center" width="50%">
+<sub><b>Title card</b></sub><br/>
+<video src="videos/bolo-intro-card/renders/video.mp4" controls width="380"></video>
+</td>
+<td align="center" width="50%">
+<sub><b>Closing card</b></sub><br/>
+<video src="videos/bolo-outro-card/renders/video.mp4" controls width="380"></video>
+</td>
+</tr>
+</table>
 
 ---
 
@@ -643,6 +673,7 @@ bolo/
 ├── tests/        # 424 unit tests (incl. 45 SerpApi + 18 prefetch-gate tests)
 │   └── fixtures/serpapi/   # SerpApi-shaped JSON payloads for offline replay
 ├── assets/       # cover + interactive Bolo runtime diagram
+├── videos/       # HyperFrames demo video sources + renders (see Demo, above)
 ├── arch/         # interactive diagrams: Bolo search path + Laya System-1 (.html + .json spec)
 ├── archify/      # Bolo runtime diagram source (.json spec + render)
 ├── utils/        # audio helpers, logger, timers, bench harness verifier
