@@ -9,7 +9,7 @@
 
 <p style="margin:16px 0 0; line-height:1;"><img src="assets/bolo-wordmark.svg" alt="Bolo" width="137" height="64" /></p>
 
-<p style="font-size:19px; color:#79c0ff; margin:16px auto 0; max-width:660px; line-height:1.45; font-weight:500;">Grounded voice search, ready with results before you finish speaking.</p>
+<p style="font-size:19px; color:#79c0ff; margin:16px auto 0; max-width:660px; line-height:1.45; font-weight:500;">Grounded voice search that starts before you finish speaking.</p>
 
 <p style="font-size:15px; color:#8b949e; margin:18px auto 0; max-width:690px; line-height:1.7;">Bolo is a real-time voice agent that starts searching while you speak. A 421M-parameter decision model evaluates partial transcripts and prefetches the relevant <a href="https://serpapi.com" style="color:#58a6ff; text-decoration:none;">SerpApi</a> query before your sentence ends. Responses are concise, speakable, and grounded in their sources.</p>
 
