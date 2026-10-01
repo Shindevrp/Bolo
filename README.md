@@ -5,23 +5,23 @@
 
 <div style="padding:40px 32px 30px;">
 
-<p style="margin:0; font-family:ui-monospace,SFMono-Regular,monospace; font-size:11px; letter-spacing:1.6px; color:#8b949e;">SERPARI INDIA HACKATHON 2026 &nbsp;&middot;&nbsp; TRACK: AI AGENTS</p>
+<p style="margin:0; font-family:ui-monospace,SFMono-Regular,monospace; font-size:11px; letter-spacing:1.6px; color:#8b949e;">SERPAPI INDIA HACKATHON 2026 &nbsp;&middot;&nbsp; AI AGENTS TRACK</p>
 
 <p style="margin:16px 0 0; line-height:1;"><img src="assets/bolo-wordmark.svg" alt="Bolo" width="137" height="64" /></p>
 
-<p style="font-size:19px; color:#79c0ff; margin:16px auto 0; max-width:660px; line-height:1.45; font-weight:500;">Grounded voice search that begins before you finish the sentence.</p>
+<p style="font-size:19px; color:#79c0ff; margin:16px auto 0; max-width:660px; line-height:1.45; font-weight:500;">Grounded voice search, ready with results before you finish speaking.</p>
 
-<p style="font-size:15px; color:#8b949e; margin:18px auto 0; max-width:690px; line-height:1.7;">Bolo is a real-time voice agent that looks things up <b style="color:#c9d1d9;">mid-utterance</b>. A 421M-parameter decision model reads every partial transcript, so the <a href="https://serpapi.com" style="color:#58a6ff; text-decoration:none;">SerpApi</a> request is already in flight while you are still speaking. Results are condensed to one or two speakable sentences, with every fact tied to the source it came from.</p>
+<p style="font-size:15px; color:#8b949e; margin:18px auto 0; max-width:690px; line-height:1.7;">Bolo is a real-time voice agent that starts searching while you speak. A 421M-parameter decision model evaluates partial transcripts and prefetches the relevant <a href="https://serpapi.com" style="color:#58a6ff; text-decoration:none;">SerpApi</a> query before your sentence ends. Responses are concise, speakable, and grounded in their sources.</p>
 
 <p style="margin:28px auto 0; max-width:720px; font-family:ui-monospace,SFMono-Regular,monospace; font-size:11px; letter-spacing:1.1px;">
 <a href="#demo" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #f0b72f; border-radius:6px; background:#1c1500; color:#f0b72f; text-decoration:none;">DEMO</a>
-<a href="#why" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">WHY</a>
-<a href="#quick-start" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">QUICK START</a>
-<a href="#serpapi" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #f0b72f; border-radius:6px; background:#1c1500; color:#f0b72f; text-decoration:none;">SERPAPI</a>
+<a href="#why" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">HOW IT WORKS</a>
+<a href="#quick-start" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">GET STARTED</a>
+<a href="#serpapi" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #f0b72f; border-radius:6px; background:#1c1500; color:#f0b72f; text-decoration:none;">SEARCH</a>
 <a href="#prefetch" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">PREFETCH</a>
 <a href="#architecture" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">ARCHITECTURE</a>
 <a href="#tools" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">TOOLS</a>
-<a href="#benchmark" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">BENCHMARK</a>
+<a href="#benchmark" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">EVALUATION</a>
 <a href="#api" style="display:inline-block; margin:3px; padding:7px 14px; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; text-decoration:none;">API</a>
 </p>
 
@@ -37,10 +37,10 @@
 </div>
 
 <div style="display:flex; flex-wrap:wrap; padding:14px 32px; background:#010409; border-top:1px solid #21262d; font-family:ui-monospace,SFMono-Regular,monospace; font-size:12px; color:#6e7681; text-align:left;">
-<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">~820 ms</span><br/>speech-end to first audio</div>
-<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">484</span><br/>tests passing</div>
-<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">74.5 / 100</span><br/>benchmark (pre-SerpApi voice-engine baseline)</div>
-<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">Entity-locked</span><br/>unverified names blocked in output</div>
+<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">~820 ms</span><br/>speech end to first audio</div>
+<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">484</span><br/>automated tests passing</div>
+<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">74.5 / 100</span><br/>voice engine baseline · before SerpApi integration</div>
+<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">Entity-locked</span><br/>unverified names blocked from responses</div>
 </div>
 
 </div>
