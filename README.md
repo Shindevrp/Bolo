@@ -7,7 +7,7 @@
 
 <p style="margin:0; font-family:ui-monospace,SFMono-Regular,monospace; font-size:11px; letter-spacing:1.6px; color:#8b949e;">SERPARI INDIA HACKATHON 2026 &nbsp;&middot;&nbsp; TRACK: AI AGENTS</p>
 
-<p style="font-size:52px; font-weight:700; color:#f8fafc; margin:16px 0 0; letter-spacing:-2px; line-height:1;">Bolo<span aria-hidden="true" style="display:inline-block; width:.28em; height:.28em; margin-left:.08em; border-radius:50%; background:#60a5fa; vertical-align:baseline;"></span></p>
+<p style="margin:16px 0 0; line-height:1;"><img src="assets/bolo-wordmark.svg" alt="Bolo" width="137" height="64" /></p>
 
 <p style="font-size:19px; color:#79c0ff; margin:16px auto 0; max-width:660px; line-height:1.45; font-weight:500;">Grounded voice search that begins before you finish the sentence.</p>
 
