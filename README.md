@@ -55,7 +55,7 @@
 
 [![Bolo — 2 minute demo, narrated](videos/bolo-full-2min/renders/poster-play.jpg)](videos/bolo-full-2min/renders/bolo-2min-demo.mp4)
 
-<sub>Click the thumbnail &rarr; opens GitHub's built-in video player (with sound). 2:00, 43 MB.</sub>
+<sub>2:00, narrated. <a href="https://drive.google.com/file/d/1c9NvS1L7-BjtYEHl6CqcGCyNa766Tz6h/view?usp=drive_link"><b>▶ Watch on Google Drive</b></a> (most reliable) &middot; or click the thumbnail above for GitHub's in-repo player.</sub>
 
 <p style="color:#8b949e; font-size:13px; margin:12px auto 0; max-width:700px; line-height:1.6;">Voice pipeline + barge-in &rarr; the SerpApi tool chain (<code>search_web</code> / <code>search_places</code> / <code>get_news</code> &rarr; <code>SerpApiClient.search()</code> &rarr; <code>providers/search/serpapi.py</code> &rarr; <code>modules/tools/registry.py</code> &rarr; <code>core/pipeline.py</code>) &rarr; a live credit gate &rarr; a 3-turn demo chain (flights &rarr; morning refinement &rarr; hotels), grounded start to finish in real SerpApi results.</p>
 
@@ -65,16 +65,18 @@
 <tr>
 <td align="center" width="50%">
 <sub><b>Title card</b> &middot; 10s</sub><br/>
-<a href="videos/bolo-intro-card/renders/video.mp4"><img src="videos/bolo-intro-card/renders/poster-play.jpg" width="380" alt="Intro title card"/></a>
+<a href="videos/bolo-intro-card/renders/video.mp4"><img src="videos/bolo-intro-card/renders/poster-play.jpg" width="380" alt="Intro title card"/></a><br/>
+<sub><a href="https://drive.google.com/file/d/1nJr_MTabry9BxglKMQ1EIYcDTf9Fe9HL/view?usp=drive_link">▶ Watch on Google Drive</a></sub>
 </td>
 <td align="center" width="50%">
 <sub><b>Closing card</b> &middot; 6s</sub><br/>
-<a href="videos/bolo-outro-card/renders/video.mp4"><img src="videos/bolo-outro-card/renders/poster-play.jpg" width="380" alt="Outro closing card"/></a>
+<a href="videos/bolo-outro-card/renders/video.mp4"><img src="videos/bolo-outro-card/renders/poster-play.jpg" width="380" alt="Outro closing card"/></a><br/>
+<sub><a href="https://drive.google.com/file/d/1YsGCELIDr2N6KEe4gYtdMb5DMq8U-0px/view?usp=drive_link">▶ Watch on Google Drive</a></sub>
 </td>
 </tr>
 </table>
 
-<p align="center"><sub>GitHub's markdown sanitizer only plays inline <code>&lt;video&gt;</code> from its own upload CDN, not a repo-relative path — so these are click-through thumbnails to GitHub's native blob video player, not raw <code>&lt;video&gt;</code> tags.</sub></p>
+<p align="center"><sub>GitHub's markdown sanitizer only plays inline <code>&lt;video&gt;</code> from its own upload CDN, not a repo-relative path — so the thumbnails above are click-through links to GitHub's native blob video player, not raw <code>&lt;video&gt;</code> tags. The Google Drive links are the dependable fallback if GitHub's player ever misbehaves.</sub></p>
 
 ---
 
