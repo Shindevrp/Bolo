@@ -44,7 +44,7 @@ st.markdown(
     """
 <div style="display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;
             border-bottom:1px solid #1e293b; padding-bottom:12px; margin-bottom:8px;">
-  <span style="font-size:28px; font-weight:700; color:#e2e8f0; letter-spacing:-1px;">Bolo</span>
+  <span style="font-size:28px; font-weight:700; color:#f8fafc; letter-spacing:-1px;">Bolo<span aria-hidden="true" style="display:inline-block; width:7px; height:7px; margin-left:3px; border-radius:50%; background:#60a5fa; vertical-align:baseline;"></span></span>
   <span style="font-size:13px; color:#64748b; font-family:ui-monospace,SFMono-Regular,monospace;">
     live session &middot; grounded voice search via SerpApi</span>
   <span style="margin-left:auto; font-size:12px; color:#475569;

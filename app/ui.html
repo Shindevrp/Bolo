@@ -10,7 +10,8 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
 .container{max-width:680px;width:100%;display:flex;flex-direction:column;gap:12px}
 .card{background:rgba(15,25,45,.5);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.06);border-radius:24px;padding:1.25rem 1.5rem;box-shadow:0 20px 60px rgba(0,0,0,.5)}
 .header{text-align:center;padding:.75rem}
-.header h1{font-size:1.1rem;font-weight:500;color:rgba(255,255,255,.3);letter-spacing:1px;text-transform:uppercase}
+.header h1{font-size:1.8rem;font-weight:800;color:#f8fafc;letter-spacing:-1.5px;text-transform:none}
+.brand-dot{display:inline-block;width:.22em;height:.22em;margin-left:.06em;border-radius:50%;background:#60a5fa;vertical-align:baseline}
 .header .sub{font-size:.7rem;color:rgba(255,255,255,.15);margin-top:2px}
 .vc{text-align:center}
 .vc-top{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:8px}
@@ -58,7 +59,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(e
 <body>
 <div class="container">
   <div class="card header">
-    <h1>Bolo</h1>
+    <h1>Bolo<span class="brand-dot" aria-hidden="true"></span></h1>
     <div class="sub">conversational voice AI</div>
   </div>
 
