@@ -53,27 +53,28 @@
 
 <div align="center">
 
-<video src="videos/bolo-full-2min/renders/bolo-2min-demo.mp4" controls width="820">
-Your browser doesn't support embedded video — the file is at
-<code>videos/bolo-full-2min/renders/bolo-2min-demo.mp4</code>.
-</video>
+[![Bolo — 2 minute demo, narrated](videos/bolo-full-2min/renders/poster-play.jpg)](videos/bolo-full-2min/renders/bolo-2min-demo.mp4)
 
-<p style="color:#8b949e; font-size:13px; margin:12px auto 0; max-width:700px; line-height:1.6;">2 minutes, narrated. Voice pipeline + barge-in &rarr; the SerpApi tool chain (<code>search_web</code> / <code>search_places</code> / <code>get_news</code> &rarr; <code>SerpApiClient.search()</code> &rarr; <code>providers/search/serpapi.py</code> &rarr; <code>modules/tools/registry.py</code> &rarr; <code>core/pipeline.py</code>) &rarr; a live credit gate &rarr; a 3-turn demo chain (flights &rarr; morning refinement &rarr; hotels), grounded start to finish in real SerpApi results.</p>
+<sub>Click the thumbnail &rarr; opens GitHub's built-in video player (with sound). 2:00, 43 MB.</sub>
+
+<p style="color:#8b949e; font-size:13px; margin:12px auto 0; max-width:700px; line-height:1.6;">Voice pipeline + barge-in &rarr; the SerpApi tool chain (<code>search_web</code> / <code>search_places</code> / <code>get_news</code> &rarr; <code>SerpApiClient.search()</code> &rarr; <code>providers/search/serpapi.py</code> &rarr; <code>modules/tools/registry.py</code> &rarr; <code>core/pipeline.py</code>) &rarr; a live credit gate &rarr; a 3-turn demo chain (flights &rarr; morning refinement &rarr; hotels), grounded start to finish in real SerpApi results.</p>
 
 </div>
 
 <table align="center">
 <tr>
 <td align="center" width="50%">
-<sub><b>Title card</b></sub><br/>
-<video src="videos/bolo-intro-card/renders/video.mp4" controls width="380"></video>
+<sub><b>Title card</b> &middot; 10s</sub><br/>
+<a href="videos/bolo-intro-card/renders/video.mp4"><img src="videos/bolo-intro-card/renders/poster-play.jpg" width="380" alt="Intro title card"/></a>
 </td>
 <td align="center" width="50%">
-<sub><b>Closing card</b></sub><br/>
-<video src="videos/bolo-outro-card/renders/video.mp4" controls width="380"></video>
+<sub><b>Closing card</b> &middot; 6s</sub><br/>
+<a href="videos/bolo-outro-card/renders/video.mp4"><img src="videos/bolo-outro-card/renders/poster-play.jpg" width="380" alt="Outro closing card"/></a>
 </td>
 </tr>
 </table>
+
+<p align="center"><sub>GitHub's markdown sanitizer only plays inline <code>&lt;video&gt;</code> from its own upload CDN, not a repo-relative path — so these are click-through thumbnails to GitHub's native blob video player, not raw <code>&lt;video&gt;</code> tags.</sub></p>
 
 ---
 
