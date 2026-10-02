@@ -15,3 +15,6 @@ videos/
 .venv
 models
 venv
+
+# hackathon form answers (contains personal details)
+SUBMISSION.md
