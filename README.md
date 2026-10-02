@@ -38,7 +38,7 @@
 
 <div style="display:flex; flex-wrap:wrap; padding:14px 32px; background:#010409; border-top:1px solid #21262d; font-family:ui-monospace,SFMono-Regular,monospace; font-size:12px; color:#6e7681; text-align:left;">
 <div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">~820 ms</span><br/>speech end to first audio</div>
-<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">528</span><br/>automated tests passing</div>
+<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">535</span><br/>automated tests passing</div>
 <div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">74.5 / 100</span><br/>voice engine baseline · before SerpApi integration</div>
 <div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">Entity-locked</span><br/>unverified names blocked from responses</div>
 </div>
@@ -187,7 +187,7 @@ python -m app.cli server --host 127.0.0.1 --port 8000
 ### Tests
 
 ```bash
-./.venv/bin/python -m pytest        # 528 passed
+./.venv/bin/python -m pytest        # 535 passed
 ```
 
 Use `./.venv/bin/python -m pytest`, not bare `pytest` — the `laya` package lives
@@ -625,7 +625,7 @@ faith from this file; it needs its own A/B run.
 ## Testing
 
 ```bash
-./.venv/bin/python -m pytest        # 528 passed in ~50s
+./.venv/bin/python -m pytest        # 535 passed in ~50s
 ```
 
 | Suite | Tests | Covers |
@@ -800,7 +800,7 @@ fixtures (`SERPAPI_RECORD_DIR`) keep tests and benchmarks off the live API.
 ## Open to work
 
 Hey 👋 — Bolo is a real, working voice agent (search mid-sentence, grounded in
-live SerpApi results, barge-in and backchannel native, 528 tests green), and I
+live SerpApi results, barge-in and backchannel native, 535 tests green), and I
 built it to prove out exactly the skills I want to bring to a team.
 
 **Open to opportunities: AI research / AI-ML roles and PhD positions.**

@@ -517,3 +517,37 @@ def test_html_entities_are_decoded() -> None:
     """Seen live: "Hyderabad Marriott Hotel &amp; Convention Centre"."""
     line = local._place_line({"title": "Hyderabad Marriott Hotel &amp; Convention Centre"})
     assert line == "Hyderabad Marriott Hotel & Convention Centre"
+
+
+class TestMisnamedKwargs:
+    """Seen on a fresh install: the 3B model called
+    get_news(query="population Pune") and the call crashed."""
+
+    def _run(self, handler, text):
+        reg = ToolRegistry()
+        reg.register(ToolSpec(name="f", description="", parameters={}, handler=handler))
+        return run(reg.execute_call(reg.find_calls(text)[0]))["result"]
+
+    def test_unknown_kwarg_fills_first_free_param(self) -> None:
+        def get_news(topic: str = "general") -> str:
+            return f"news:{topic}"
+
+        assert self._run(get_news, "{tool:f(query=population Pune)}") == "news:population Pune"
+
+    def test_known_kwargs_kept_and_unknown_fills_the_rest(self) -> None:
+        def places(query: str, location: str = "") -> str:
+            return f"{query}@{location}"
+
+        assert self._run(places, "{tool:f(query=biryani, city=Pune)}") == "biryani@Pune"
+
+    def test_positional_args_are_respected(self) -> None:
+        def places(query: str, location: str = "") -> str:
+            return f"{query}@{location}"
+
+        assert self._run(places, "{tool:f(biryani, place=Pune)}") == "biryani@Pune"
+
+    def test_extra_unknowns_are_dropped(self) -> None:
+        def weather(city: str) -> str:
+            return f"w:{city}"
+
+        assert self._run(weather, "{tool:f(location=Goa, units=metric)}") == "w:Goa"

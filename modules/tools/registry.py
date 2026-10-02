@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 from dataclasses import dataclass, field
@@ -150,6 +151,39 @@ def iter_calls(text: str, known: frozenset[str] = frozenset()):
         return
 
 
+def _fit_args(
+    handler: Callable[..., Any], args: list[str], kwargs: dict[str, str]
+) -> tuple[list[str], dict[str, str]]:
+    """Map misnamed keyword args onto the handler's own parameters.
+
+    Small models write ``get_news(query=...)`` for ``get_news(topic=...)``
+    or ``get_weather(location=...)`` for ``city``; calling the handler as is
+    raises "unexpected keyword argument" and the whole answer fails. Each
+    unknown keyword fills the next parameter not already given, in order;
+    any left over are dropped. Handlers taking ``**kwargs`` are untouched.
+    """
+    try:
+        params = list(inspect.signature(handler).parameters.values())
+    except (TypeError, ValueError):
+        return args, kwargs
+    if any(p.kind is p.VAR_KEYWORD for p in params):
+        return args, kwargs
+    named = [
+        p.name for p in params
+        if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+    ]
+    unknown = [k for k in kwargs if k not in named]
+    if not unknown:
+        return args, kwargs
+    free = [n for n in named[len(args):] if n not in kwargs]
+    fitted = {k: v for k, v in kwargs.items() if k in named}
+    for key in unknown:
+        if not free:
+            break
+        fitted[free.pop(0)] = kwargs[key]
+    return args, fitted
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
@@ -231,8 +265,9 @@ class ToolRegistry:
         if not spec:
             return {"tool": call["name"], "result": f"Unknown tool: {call['name']}"}
         try:
-            args = call.get("args", [])
-            kwargs = call.get("kwargs") or {}
+            args, kwargs = _fit_args(
+                spec.handler, list(call.get("args", [])), dict(call.get("kwargs") or {})
+            )
             if asyncio.iscoroutinefunction(spec.handler):
                 result = await spec.handler(*args, **kwargs)
             else:

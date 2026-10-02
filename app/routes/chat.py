@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -8,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from modules.memory.session import SessionMemory
 from modules.tools.builtin import get_builtin_tools
+from modules.tools.registry import ToolMarkerFilter
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -23,6 +25,7 @@ BASE_PROMPT = (
 # Tools are stateless but the key client must not be, so it is built once per
 # process and reused. Building it per request re-reads env and drops caches.
 _registry = get_builtin_tools()
+_NO_ANSWER = "Sorry, I couldn't find an answer to that right now."
 
 # session_id -> (SessionMemory, created_at). A demo client sends the same
 # conversation repeatedly, so history has to outlive the request.
@@ -71,9 +74,15 @@ async def _tool_rounds(
     full = ""
     for _round in range(3):
         full = ""
+        # Stream only what is safe to show: a "{tool:...}" call (which may
+        # arrive split across tokens) is cut out, never sent to the client.
+        marker = ToolMarkerFilter()
         async for token in llm.generate_stream(messages):
             full += token
-            await emit(token)
+            if safe := marker.feed(token):
+                await emit(safe)
+        if held := marker.flush():
+            await emit(held)
 
         calls = _registry.find_calls(full)
         if not calls:
@@ -91,8 +100,14 @@ async def _tool_rounds(
             {"role": "user", "content": "Continue naturally with the tool results."}
         )
 
-    memory.add("assistant", full)
-    return _registry.strip_calls(full)
+    answer = _registry.strip_calls(full).strip()
+    if not answer:
+        # The model was still asking for tools when the round cap hit (or
+        # produced nothing): say so rather than return a blank reply.
+        answer = _NO_ANSWER
+        await emit(answer)
+    memory.add("assistant", answer)
+    return answer
 
 
 @router.post("/stream")
@@ -115,12 +130,29 @@ async def chat_stream(request: Request):
     async def event_stream():
         yield f"data: {json.dumps({'type': 'start', 'session_id': session_id})}\n\n"
 
-        async def emit(token: str) -> None:
-            yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+        # _tool_rounds pushes tokens through a queue; this generator relays
+        # them as SSE events while the turn (and its tool calls) runs.
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
 
-        answer = await _tool_rounds(
-            pipeline, pipeline.llm, memory, message, emit
-        )
+        async def emit(token: str) -> None:
+            await queue.put(token)
+
+        async def run() -> str:
+            try:
+                return await _tool_rounds(
+                    pipeline, pipeline.llm, memory, message, emit
+                )
+            finally:
+                await queue.put(None)
+
+        task = asyncio.create_task(run())
+        try:
+            while (token := await queue.get()) is not None:
+                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+            answer = await task
+        finally:
+            if not task.done():
+                task.cancel()
         yield f"data: {json.dumps({'type': 'done', 'text': answer})}\n\n"
 
     return StreamingResponse(

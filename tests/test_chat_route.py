@@ -183,5 +183,55 @@ def test_idle_sessions_are_trimmed():
     assert "new" in chat_mod._sessions
 
 
+# ---------------------------------------------------------------------------
+# HTTP endpoints (the UI's Text mode posts to /chat/stream)
+# ---------------------------------------------------------------------------
+
+
+def _app(llm):
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(chat_mod.router)
+    app.state.pipeline = _pipeline(llm)
+    return app
+
+
+def _post(app, path: str, payload: dict) -> httpx.Response:
+    async def go():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(path, json=payload)
+
+    return asyncio.run(go())
+
+
+def test_stream_endpoint_streams_tokens_and_done():
+    """Regression: emit() was an async generator, so every /chat/stream
+    request crashed with "async_generator can't be used in 'await'"."""
+    llm = FakeLLM([
+        "{tool:search_places(query=biryani in Hyderabad)}",
+        "Paradise Biryani is a good pick.",
+    ])
+    r = _post(_app(llm), "/chat/stream", {"message": "biryani in Hyderabad"})
+    assert r.status_code == 200
+    events = [json.loads(l[6:]) for l in r.text.splitlines() if l.startswith("data: ")]
+    kinds = [e["type"] for e in events]
+    assert kinds[0] == "start" and kinds[-1] == "done"
+    streamed = "".join(e["token"] for e in events if e["type"] == "token")
+    assert "tool" not in streamed and "{" not in streamed
+    assert "Paradise Biryani" in streamed
+    assert events[-1]["text"].startswith("Paradise Biryani")
+
+
+def test_once_endpoint_never_returns_blank():
+    """A model still calling tools at the round cap gets an honest answer,
+    not an empty string (seen on a fresh Docker install)."""
+    llm = FakeLLM(["{tool:search_web(query=loop)}"])
+    r = _post(_app(llm), "/chat/", {"message": "loop"})
+    assert r.status_code == 200
+    assert r.json()["response"] == chat_mod._NO_ANSWER
+
+
 async def _no_emit(_token: str) -> None:
     return None
