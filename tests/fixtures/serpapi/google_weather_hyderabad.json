@@ -1,0 +1,14 @@
+{
+  "search_parameters": {"engine": "google", "q": "weather in hyderabad", "gl": "in", "hl": "en"},
+  "answer_box": {
+    "type": "weather_result",
+    "temperature": "28",
+    "unit": "Celsius",
+    "precipitation": "8%",
+    "humidity": "48%",
+    "wind": "13 km/h",
+    "location": "Hyderabad, Telangana",
+    "date": "Friday",
+    "weather": "Sunny"
+  }
+}

@@ -86,9 +86,10 @@ def _wiki_search(query: str) -> str:
 
 
 def _clean(s: Any) -> str:
-    """Collapse whitespace; "|" is our result separator, so titles like
+    """Decode HTML entities (SerpApi titles can carry "&amp;"), collapse
+    whitespace; "|" is our result separator, so titles like
     "Qutub Minar | ASI" become "Qutub Minar - ASI"."""
-    return " ".join(str(s or "").replace("|", "-").split())
+    return " ".join(html.unescape(str(s or "")).replace("|", "-").split())
 
 
 def _domain(link: str) -> str:

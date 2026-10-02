@@ -216,10 +216,10 @@ class TestLiveFalsePositives:
 
 
 class TestToolMarkerFilter:
-    def _run(self, tokens):
+    def _run(self, tokens, tool_names=frozenset()):
         from modules.tools.registry import ToolMarkerFilter
 
-        f = ToolMarkerFilter()
+        f = ToolMarkerFilter(tool_names)
         out = "".join(f.feed(t) for t in tokens) + f.flush()
         return out, f.seen
 
@@ -229,3 +229,15 @@ class TestToolMarkerFilter:
     def test_brace_that_is_not_a_tool_is_released(self) -> None:
         assert self._run(["a {", "b} c"]) == ("a {b} c", False)
         assert self._run(["ends with {to"]) == ("ends with {to", False)
+
+    def test_dropped_prefix_with_parens_is_held_back(self) -> None:
+        # No "tool:" prefix at all -- open-paren syntax alone is enough,
+        # even for a name the filter doesn't know about.
+        assert self._run(["Hi. ", "{get_weather(Hyder", "abad)}"]) == ("Hi. ", True)
+
+    def test_dropped_prefix_and_parens_needs_known_name(self) -> None:
+        assert self._run(
+            ["{", "get_weather", "}"], tool_names=frozenset({"get_weather"})
+        ) == ("", True)
+        # Same bare shape, unregistered name: not confident enough, release.
+        assert self._run(["{", "x", "}"]) == ("{x}", False)

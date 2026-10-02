@@ -16,9 +16,17 @@ class ToolSpec:
     proactive_hint: str = ""
 
 
-_CALL_START_RE = re.compile(r"\{tool:(\w+)\(")
 _KWARG_RE = re.compile(r"^([A-Za-z_]\w*)\s*=(?!=)\s*(.*)$", re.S)
 _CLOSE = {"(": ")", "[": "]", "{": "}"}
+
+# Canonical call: {tool:name(args)}. The model sometimes drops the "tool:"
+# prefix (open-paren syntax is distinctive enough on its own that it's
+# accepted for any name, registered or not -- see iter_calls) or drops the
+# prefix *and* the parens for a zero-arg attempt, e.g. {get_weather}; that
+# bare form is ambiguous with ordinary brace text, so it's only accepted
+# for a name the caller knows about (see iter_calls' ``known`` argument).
+_CALL_START_RE = re.compile(r"\{(?:tool:)?(\w+)\(")
+_BARE_CALL_RE = re.compile(r"\{(?:tool:)?(\w+)\}")
 
 
 def _unquote(s: str) -> str:
@@ -113,20 +121,33 @@ def parse_args(body: str) -> tuple[list[str], dict[str, str]]:
     return args, kwargs
 
 
-def iter_calls(text: str):
-    """Yield (name, body, start, end) for every complete tool call."""
+def iter_calls(text: str, known: frozenset[str] = frozenset()):
+    """Yield (name, body, start, end) for every complete tool call.
+
+    ``known`` (the registered tool names) disambiguates the bare
+    ``{name}`` form from incidental brace text elsewhere in a reply; the
+    open-paren forms need no such check since ``{name(`` essentially never
+    occurs outside a call attempt.
+    """
     pos = 0
     while True:
         m = _CALL_START_RE.search(text, pos)
-        if not m:
-            return
-        scanned = _scan_call(text, m.end())
-        if scanned is None:
-            pos = m.end()
+        b = _BARE_CALL_RE.search(text, pos)
+        if m and (not b or m.start() <= b.start()):
+            scanned = _scan_call(text, m.end())
+            if scanned is None:
+                pos = m.end()
+                continue
+            body, end = scanned
+            yield m.group(1), body, m.start(), end
+            pos = end
             continue
-        body, end = scanned
-        yield m.group(1), body, m.start(), end
-        pos = end
+        if b:
+            if b.group(1) in known:
+                yield b.group(1), "", b.start(), b.end()
+            pos = b.end()
+            continue
+        return
 
 
 class ToolRegistry:
@@ -183,9 +204,12 @@ class ToolRegistry:
         ]
         return "\n".join(lines)
 
+    def tool_names(self) -> frozenset[str]:
+        return frozenset(self._tools)
+
     def find_calls(self, text: str) -> list[dict[str, Any]]:
         calls: list[dict[str, Any]] = []
-        for name, body, _, _ in iter_calls(text):
+        for name, body, _, _ in iter_calls(text, self.tool_names()):
             args, kwargs = parse_args(body)
             call: dict[str, Any] = {"name": name, "args": args}
             if kwargs:
@@ -196,7 +220,7 @@ class ToolRegistry:
     def strip_calls(self, text: str) -> str:
         out: list[str] = []
         pos = 0
-        for _, _, start, end in iter_calls(text):
+        for _, _, start, end in iter_calls(text, self.tool_names()):
             out.append(text[pos:start])
             pos = end
         out.append(text[pos:])
@@ -250,37 +274,62 @@ class ToolRegistry:
         return cleaned, results
 
 
+# Open-paren call syntax ("{name(") is distinctive enough on its own --
+# accepted for any name, registered or not, same as iter_calls.
+_CONFIRMED_OPEN_RE = re.compile(r"^\{(?:tool:)?\w+\(")
+# Bare "{name}" (no parens): ambiguous with ordinary brace text, so it only
+# confirms a call when name is registered (checked by the caller).
+_CONFIRMED_BARE_RE = re.compile(r"^\{(?:tool:)?(\w+)\}")
+# Still could resolve into either shape above -- keep holding.
+_STILL_AMBIGUOUS_RE = re.compile(r"^\{(?:tool:)?\w*$")
+
+
 class ToolMarkerFilter:
-    """Streams LLM text with any ``{tool:...}`` call cut out of it.
+    """Streams LLM text with any tool-call marker cut out of it.
 
     Tokens arrive in fragments ("{", "tool", ":"), so a naive "is the marker
     in the text yet?" check lets "{tool" reach the screen and TTS before the
     call is recognised. This holds back any trailing text that could still
-    become the marker, and once the marker appears, emits nothing further.
+    become a marker, and once one is confirmed, emits nothing further.
+
+    The canonical form is ``{tool:name(args)}``, but the model sometimes
+    drops the "tool:" prefix (``{name(args)}``) or drops the prefix *and*
+    the parens for a zero-arg attempt (``{name}``) -- both are recognised
+    too, so the raw syntax never leaks into speech. The bare, no-parens form
+    needs ``tool_names`` to tell a real call from incidental brace text.
     """
 
-    MARKER = "{tool:"
-
-    def __init__(self) -> None:
+    def __init__(self, tool_names: frozenset[str] = frozenset()) -> None:
         self._held = ""
         self.seen = False
+        self._tool_names = tool_names
 
     def feed(self, token: str) -> str:
         """Return the part of *token* that is safe to show and speak now."""
         if self.seen:
             return ""
         buf = self._held + token
-        i = buf.find(self.MARKER)
-        if i != -1:
+        safe = ""
+        if not self._held:
+            i = buf.find("{")
+            if i == -1:
+                return buf
+            safe, buf = buf[:i], buf[i:]
+
+        if _CONFIRMED_OPEN_RE.match(buf):
             self.seen = True
             self._held = ""
-            return buf[:i]
-        for k in range(min(len(self.MARKER) - 1, len(buf)), 0, -1):
-            if self.MARKER.startswith(buf[-k:]):
-                self._held = buf[-k:]
-                return buf[:-k]
+            return safe
+        bare = _CONFIRMED_BARE_RE.match(buf)
+        if bare and bare.group(1) in self._tool_names:
+            self.seen = True
+            self._held = ""
+            return safe
+        if _STILL_AMBIGUOUS_RE.match(buf):
+            self._held = buf
+            return safe
         self._held = ""
-        return buf
+        return safe + buf
 
     def flush(self) -> str:
         """Held-back text once the stream ends (it was not a tool call)."""

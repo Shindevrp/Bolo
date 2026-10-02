@@ -5,6 +5,7 @@ import itertools
 import json
 import re
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import AsyncGenerator, ClassVar
@@ -120,6 +121,14 @@ _SOFT_BARGE_PROBE_ATTEMPTS = 3   # rapid background probes before pacing resumes
 # state over trailing-silence windows and never firing speech_end. Real piper
 # speech frames measure ~0.05-0.28 RMS; digital silence measures 0.0.
 SILENCE_ENERGY_FLOOR = 0.003
+
+# Frames of pre-roll (128ms each) kept from before speech is confirmed. The
+# HysteresisVAD needs onset_confirmation (2) frames of probability above
+# threshold before it even leaves OFF, plus EMA smoothing lags the true
+# onset further -- without this buffer that audio is never appended to
+# speech_buffer at all, so the first ~250-400ms of the utterance (often a
+# whole leading word) is silently dropped before transcription ever sees it.
+PREROLL_FRAMES = 4
 
 
 class PipelineEvent(Enum):
@@ -292,6 +301,10 @@ class StreamingPipeline:
         self._last_spoken: dict[str, str] = {}
         self._speaking_text: dict[str, str] = {}
         self._speech_buffers: dict[str, bytearray] = {}
+        # Rolling raw-audio window kept while *not* speaking, so the frames
+        # lost to the VAD's onset-confirmation delay can be prepended once
+        # speech is confirmed (see PREROLL_FRAMES).
+        self._preroll: dict[str, deque[bytes]] = {}
         self._frame_buffers: dict[str, bytearray] = {}
         self._silence_ms: dict[str, float] = {}
         self._speech_ms: dict[str, float] = {}
@@ -415,6 +428,7 @@ class StreamingPipeline:
         self._echo_floor.clear()
         self._speaking.clear()
         self._speech_buffers.clear()
+        self._preroll.clear()
         self._silence_ms.clear()
         self._speech_ms.clear()
         self._last_partial_time.clear()
@@ -491,6 +505,7 @@ class StreamingPipeline:
         self._echo_floor.pop(session_id, None)
         self._speaking.pop(session_id, None)
         self._speech_buffers.pop(session_id, None)
+        self._preroll.pop(session_id, None)
         self._speaking_text.pop(session_id, None)
         self._frame_buffers.pop(session_id, None)
         self._silence_ms.pop(session_id, None)
@@ -757,6 +772,12 @@ class StreamingPipeline:
             else:
                 self._low_energy_frames[sid] = 0
 
+            if not is_speaking:
+                preroll = self._preroll.setdefault(
+                    sid, deque(maxlen=PREROLL_FRAMES)
+                )
+                preroll.append(bytes(chunk))
+
             logger.debug(
                 f"loop sid={sid} chunk={chunk_count} nbytes={len(chunk)} "
                 f"is_speech={is_speech} speaking={is_speaking}"
@@ -825,11 +846,16 @@ class StreamingPipeline:
                     self._speaking[sid] = True
                     ctx.dialogue_state = DialogueState.LISTENING
                     self._silence_ms[sid] = 0.0
-                    self._speech_ms[sid] = len(chunk) / (
+                    # Seed the buffer with the pre-roll window (includes this
+                    # chunk, already appended above) so the audio lost to the
+                    # VAD's onset-confirmation delay isn't dropped.
+                    preroll = self._preroll.pop(sid, None)
+                    primed = b"".join(preroll) if preroll else bytes(chunk)
+                    self._speech_ms[sid] = len(primed) / (
                         self.vad.sample_rate * 2 / 1000
                     )
                     self._low_energy_frames[sid] = 0
-                    self._speech_buffers[sid] = bytearray(chunk)
+                    self._speech_buffers[sid] = bytearray(primed)
                     speech_buffer = self._speech_buffers[sid]
                     self._last_partial_time[sid] = time.time()
                     # Discard the previous utterance's partial transcript so
@@ -1769,7 +1795,7 @@ class StreamingPipeline:
                 # Normal single-speaker streaming path
                 first_token = True
                 tool_marker_seen = False
-                marker_filter = ToolMarkerFilter()
+                marker_filter = ToolMarkerFilter(self._tool_registry.tool_names())
 
                 bc_timer = None
                 if not ctx.urgent:
@@ -1902,7 +1928,7 @@ class StreamingPipeline:
 
                     llm_start = time.perf_counter()
                     first_token = True
-                    followup_filter = ToolMarkerFilter()
+                    followup_filter = ToolMarkerFilter(self._tool_registry.tool_names())
                     async for token in self._llm_for(ctx).generate_stream(
                         followup_messages
                     ):

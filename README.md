@@ -38,7 +38,7 @@
 
 <div style="display:flex; flex-wrap:wrap; padding:14px 32px; background:#010409; border-top:1px solid #21262d; font-family:ui-monospace,SFMono-Regular,monospace; font-size:12px; color:#6e7681; text-align:left;">
 <div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">~820 ms</span><br/>speech end to first audio</div>
-<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">484</span><br/>automated tests passing</div>
+<div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">528</span><br/>automated tests passing</div>
 <div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">74.5 / 100</span><br/>voice engine baseline · before SerpApi integration</div>
 <div style="flex:1 1 150px; padding:4px 0;"><span style="color:#e6edf3; font-size:15px; font-weight:600;">Entity-locked</span><br/>unverified names blocked from responses</div>
 </div>
@@ -187,7 +187,7 @@ python -m app.cli server --host 127.0.0.1 --port 8000
 ### Tests
 
 ```bash
-./.venv/bin/python -m pytest        # 484 passed
+./.venv/bin/python -m pytest        # 528 passed
 ```
 
 Use `./.venv/bin/python -m pytest`, not bare `pytest` — the `laya` package lives
@@ -625,7 +625,7 @@ faith from this file; it needs its own A/B run.
 ## Testing
 
 ```bash
-./.venv/bin/python -m pytest        # 484 passed in ~45s
+./.venv/bin/python -m pytest        # 528 passed in ~50s
 ```
 
 | Suite | Tests | Covers |
@@ -777,8 +777,15 @@ tests, and the pause-gated SerpApi prefetch (one credit per utterance, covered b
 tools, the on-screen results card, a filler line while searching, and a
 SerpApi-vs-fallback A/B benchmark (see the honest gap noted above).
 
-**AI tools used.** Built with AI assistance (Claude) for code generation,
-refactoring, and documentation. Benchmark scoring uses an LLM judge
+**AI tools used.**
+- **Code:** Claude Code (Anthropic Claude) and OpenAI Codex / opencode, for
+  code generation, refactoring, debugging and tests.
+- **README:** parts of this README were drafted and edited with the same AI
+  tools.
+- **Videos:** the intro/outro cards and video compositions were built with
+  HyperFrames, and the narration was generated with Kokoro TTS.
+
+Benchmark scoring uses an LLM judge
 (`qwen2.5:3b` by default) — a real limitation of the 74.5 number, which is why
 the deterministic endpointing table above is the more trustworthy artefact.
 
@@ -793,7 +800,7 @@ fixtures (`SERPAPI_RECORD_DIR`) keep tests and benchmarks off the live API.
 ## Open to work
 
 Hey 👋 — Bolo is a real, working voice agent (search mid-sentence, grounded in
-live SerpApi results, barge-in and backchannel native, 484 tests green), and I
+live SerpApi results, barge-in and backchannel native, 528 tests green), and I
 built it to prove out exactly the skills I want to bring to a team.
 
 **Open to opportunities: AI research / AI-ML roles and PhD positions.**

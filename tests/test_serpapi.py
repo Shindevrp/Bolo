@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from modules.tools import local, news, web_search
+from modules.tools import local, news, weather, web_search
 from modules.tools.builtin import get_builtin_tools
 from modules.tools.registry import ToolRegistry, ToolSpec, parse_args
 from providers.search.serpapi import (
@@ -328,6 +328,44 @@ class TestCallParsing:
         assert run(reg.execute_call(call))["result"] == "tea@Pune"
 
 
+class TestLenientCallSyntax:
+    """The model occasionally drops the "tool:" prefix, the parens, or
+    both. These forms must still be recognised and stripped (never spoken
+    verbatim), while ordinary brace text that isn't a call stays put."""
+
+    reg = get_builtin_tools()
+
+    def test_dropped_prefix_with_parens(self) -> None:
+        assert self.reg.find_calls("{get_weather(Hyderabad)}") == [
+            {"name": "get_weather", "args": ["Hyderabad"]}
+        ]
+        assert self.reg.strip_calls("{get_weather(Hyderabad)}") == ""
+
+    def test_dropped_prefix_and_parens_is_zero_arg_call(self) -> None:
+        assert self.reg.find_calls("{get_weather}") == [
+            {"name": "get_weather", "args": []}
+        ]
+        assert self.reg.strip_calls("{get_weather}") == ""
+
+    def test_unregistered_name_with_parens_still_strips(self) -> None:
+        # A hallucinated tool name: open-paren syntax is distinctive enough
+        # to strip even though the name was never registered -- execute_call
+        # reports it as "Unknown tool" rather than leaking the raw braces.
+        text = '{get_web_info(keyword="popular restaurant in Hyderabad")}'
+        calls = self.reg.find_calls(text)
+        assert calls == [
+            {"name": "get_web_info", "kwargs": {"keyword": "popular restaurant in Hyderabad"}, "args": []}
+        ]
+        assert self.reg.strip_calls(text) == ""
+
+    def test_unregistered_bare_name_is_not_a_call(self) -> None:
+        # No parens and not a real tool: too ambiguous with ordinary brace
+        # text ("the set {x}") to treat as a call attempt.
+        text = "the answer is {x} today"
+        assert self.reg.find_calls(text) == []
+        assert self.reg.strip_calls(text) == text
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -448,7 +486,34 @@ class TestNews:
         assert ToolRegistry._result_is_bad(out)
 
 
+class TestWeather:
+    def test_answer_box(self, serp) -> None:
+        out = run(weather.get_weather("Hyderabad"))
+        assert out == (
+            "Hyderabad, Telangana: Sunny, 28°C, humidity 48%, wind 13 km/h"
+        )
+        assert serp.requests[0]["engine"] == "google"
+        assert serp.requests[0]["q"] == "weather in hyderabad"
+
+    def test_falls_back_without_key(self, monkeypatch) -> None:
+        set_client(SerpApiClient(""))
+        monkeypatch.setattr(weather, "_wttr_weather", lambda c: f"wttr:{c}")
+        assert run(weather.get_weather("Goa")) == "wttr:Goa"
+
+    def test_falls_back_on_serpapi_error(self, serp, monkeypatch) -> None:
+        monkeypatch.setattr(weather, "_wttr_weather", lambda c: f"wttr:{c}")
+        assert run(weather.get_weather("nonsense place with no box")) == (
+            "wttr:nonsense place with no box"
+        )
+
+
 def test_tests_never_see_a_real_key() -> None:
     from providers.search.serpapi import get_client
 
     assert not get_client().enabled
+
+
+def test_html_entities_are_decoded() -> None:
+    """Seen live: "Hyderabad Marriott Hotel &amp; Convention Centre"."""
+    line = local._place_line({"title": "Hyderabad Marriott Hotel &amp; Convention Centre"})
+    assert line == "Hyderabad Marriott Hotel & Convention Centre"
