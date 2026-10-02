@@ -511,3 +511,9 @@ def test_tests_never_see_a_real_key() -> None:
     from providers.search.serpapi import get_client
 
     assert not get_client().enabled
+
+
+def test_html_entities_are_decoded() -> None:
+    """Seen live: "Hyderabad Marriott Hotel &amp; Convention Centre"."""
+    line = local._place_line({"title": "Hyderabad Marriott Hotel &amp; Convention Centre"})
+    assert line == "Hyderabad Marriott Hotel & Convention Centre"
